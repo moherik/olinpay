@@ -39,6 +39,14 @@ func WriteError(w http.ResponseWriter, status int, code, message, field string) 
 	WriteJSON(w, status, ErrorBody{Error: ErrorDetail{Code: code, Message: message, Field: field}})
 }
 
+// WriteRaw writes a pre-encoded body verbatim. It is used when a provider hands
+// back the exact acknowledgement a gateway expects.
+func WriteRaw(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 // MaxBodyBytes is the default cap applied by [DecodeJSON].
 const MaxBodyBytes = 1 << 20 // 1 MiB
 

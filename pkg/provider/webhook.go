@@ -13,6 +13,10 @@ import (
 type WebhookRequest struct {
 	// Headers holds every HTTP header of the callback.
 	Headers http.Header
+	// Path is the URL path the callback arrived on, e.g. "/webhooks/winpay".
+	// Gateways that follow Bank Indonesia's SNAP standard fold this path into
+	// the signature string, so adapters need it to verify callbacks.
+	Path string
 	// Body is the raw request body. It is never modified so that signature
 	// verification stays valid.
 	Body []byte

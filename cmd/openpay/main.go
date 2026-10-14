@@ -38,6 +38,7 @@ import (
 	// Provider integrations register their factories via init(). Importing the
 	// package for side effects is all that is required to make them available.
 	_ "github.com/moherik/openpay.id/pkg/provider/mock"
+	_ "github.com/moherik/openpay.id/pkg/provider/winpay"
 )
 
 // version is overridable at build time with -ldflags "-X main.version=...".

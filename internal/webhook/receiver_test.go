@@ -37,8 +37,16 @@ func setup(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatalf("mock.New: %v", err)
 	}
+	return setupWithProvider(t, gateway)
+}
+
+// setupWithProvider builds the receiver around an arbitrary provider so tests
+// can exercise optional interfaces.
+func setupWithProvider(t *testing.T, p provider.Provider) *fixture {
+	t.Helper()
+
 	registry := provider.NewRegistry()
-	registry.Add(gateway)
+	registry.Add(p)
 
 	store := memory.NewStore()
 	merchant := &domain.Merchant{
@@ -166,5 +174,45 @@ func TestReceiverUnknownProvider(t *testing.T) {
 	resp, _ := post(t, f, "/webhooks/nope", []byte(`{}`), "")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// ackProvider wraps the mock and also implements provider.WebhookResponder, so
+// the receiver must reply with its own body instead of the generic envelope.
+type ackProvider struct {
+	*mock.Provider
+	status int
+	body   []byte
+}
+
+func (a *ackProvider) WebhookResponse(*provider.WebhookEvent) (int, []byte) {
+	return a.status, a.body
+}
+
+func TestReceiverHonoursProviderAcknowledgement(t *testing.T) {
+	gateway, err := mock.New(provider.Config{"secret": gatewaySecret})
+	if err != nil {
+		t.Fatalf("mock.New: %v", err)
+	}
+	ack := &ackProvider{
+		Provider: gateway,
+		status:   http.StatusOK,
+		body:     []byte(`{"responseCode":"2002500","responseMessage":"Successful"}`),
+	}
+	f := setupWithProvider(t, ack)
+
+	tx := createPayment(t, f)
+	body, _ := json.Marshal(map[string]any{
+		"reference_id": tx.ReferenceID,
+		"status":       "paid",
+		"amount":       tx.Amount,
+	})
+
+	resp, raw := post(t, f, "/webhooks/mock", body, mock.Sign(gatewaySecret, body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, raw)
+	}
+	if string(raw) != string(ack.body) {
+		t.Errorf("ack body = %s, want %s", raw, ack.body)
 	}
 }

@@ -80,6 +80,7 @@ func (r *Receiver) Handle(w http.ResponseWriter, req *http.Request) {
 
 	wreq := &provider.WebhookRequest{
 		Headers:    req.Header,
+		Path:       req.URL.Path,
 		Body:       body,
 		Query:      req.URL.Query(),
 		RemoteAddr: req.RemoteAddr,
@@ -114,6 +115,17 @@ func (r *Receiver) Handle(w http.ResponseWriter, req *http.Request) {
 
 	r.log.Info("webhook processed",
 		"provider", name, "transaction_id", tx.ID, "status", tx.Status)
+
+	// Some gateways only stop retrying once they see their own acknowledgement
+	// body; let the provider supply it when it wants to.
+	if responder, ok := p.(provider.WebhookResponder); ok {
+		status, ack := responder.WebhookResponse(evt)
+		if status == 0 {
+			status = http.StatusOK
+		}
+		httpx.WriteRaw(w, status, ack)
+		return
+	}
 
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"received":       true,

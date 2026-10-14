@@ -94,3 +94,14 @@ type SignatureVerifier interface {
 type HealthChecker interface {
 	Health(ctx context.Context) error
 }
+
+// WebhookResponder is an OPTIONAL interface a provider MAY implement to control
+// the exact HTTP response the webhook engine sends back to a gateway once a
+// callback has been accepted.
+//
+// Most gateways accept any 2xx, but some (notably SNAP/Bank Indonesia gateways
+// such as Winpay) keep retrying until they receive their own documented
+// acknowledgement body. Implementations must return a non-zero status code.
+type WebhookResponder interface {
+	WebhookResponse(evt *WebhookEvent) (statusCode int, body []byte)
+}

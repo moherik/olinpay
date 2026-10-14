@@ -97,7 +97,8 @@ PJP → webhook engine (receiver) → provider engine (parse + verify)
 │   └── webhook/            # webhook engine: receiver + dispatcher
 ├── migrations/             # SQL migrations (applied by `openpay migrate`)
 └── pkg/provider/           # PUBLIC contract every provider implements
-    └── mock/               # reference provider (in-memory gateway)
+    ├── mock/               # reference provider (in-memory gateway)
+    └── winpay/             # real-world example: Winpay SNAP API adapter
 ```
 
 `internal/` is private to this module. `pkg/provider` is the public SDK: anyone
@@ -222,6 +223,8 @@ Optionally implement:
 
 - `provider.SignatureVerifier` — to authenticate inbound callbacks (the webhook
   engine calls it before parsing).
+- `provider.WebhookResponder` — to control the exact acknowledgement body sent
+  back to the gateway (some gateways retry until they see their own format).
 - `provider.HealthChecker` — to report readiness.
 
 A provider never touches the database or the core engine; it only translates.
@@ -316,6 +319,39 @@ import _ "github.com/moherik/openpay.id/pkg/provider/midtrans"
 3. Treat `ReferenceID` as an idempotency key.
 4. Keep `ParseWebhook` pure — no I/O, no side effects.
 5. Wrap failures in `*provider.Error` so the core engine can react.
+
+### A real-world example: Winpay
+
+`pkg/provider/winpay` is a full adapter for [Winpay](https://docs.winpay.id),
+an Indonesian PJP that exposes Bank Indonesia's **SNAP API**. It is the best
+place to look when writing your own adapter, because it demonstrates the parts
+the mock provider fakes:
+
+- **Request signing** — the SNAP "Asymmetric Without Get Token" scheme signs
+  `HTTPMethod:EndpointUrl:Lowercase(HexEncode(SHA-256(minify(body)))):Timestamp`
+  with RSA-SHA256 and sends it as `X-SIGNATURE`.
+- **Callback verification** — the same formula is verified with Winpay's public
+  key. This is why `provider.WebhookRequest` carries the callback `Path`.
+- **Custom acknowledgement** — `WebhookResponder` replies with the SNAP
+  `{"responseCode":"2002500",...}` body so Winpay does not retry.
+- **Gateway-specific correlation** — Winpay addresses inquiry/cancel by the
+  `contractId` (and a VA number) it returned at creation; the adapter keeps a
+  short-lived cache of those, since the unified contract does not carry them.
+
+It supports Virtual Accounts, QRIS and eWallets. Enable it with:
+
+```bash
+# .env
+OPENPAY_PROVIDERS=mock,winpay
+OPENPAY_PROVIDER_WINPAY_PARTNER_ID=962489e9-de5d-4eb7-92a4-b07d44d64bf4
+OPENPAY_PROVIDER_WINPAY_PRIVATE_KEY=MIIEowIBAAKCAQB5jAWUddv1tZW6...   # PEM or base64 DER
+OPENPAY_PROVIDER_WINPAY_PUBLIC_KEY=MIGeMA0GCSqGSIb3DQEBAQUAA4GMADCBiAKBgHGK...
+OPENPAY_PROVIDER_WINPAY_BASE_URL=https://sandbox-snap.winpay.id
+OPENPAY_PROVIDER_WINPAY_CALLBACK_URL=https://openpay.example/webhooks/winpay
+```
+
+Point Winpay's merchant callback at `POST /webhooks/winpay`. Leave
+`PUBLIC_KEY` empty to skip signature verification (development only).
 
 ## Routing
 
@@ -415,16 +451,25 @@ signature verification, routing strategies, the core engine (idempotency,
 webhook reconciliation, cancel), the API surface, and the inbound webhook
 engine.
 
+The Winpay adapter has its own suite (`pkg/provider/winpay`) that runs against a
+stub SNAP server which validates the RSA signature on every outgoing request, so
+the mapping, signing and callback-parsing logic are exercised end to end.
+
 ## Status / roadmap
 
 Implemented: the full skeleton — API interface, core engine with routing, the
 provider contract + registry, the mock provider, inbound webhook receiver,
 outbound dispatcher with retries, PostgreSQL persistence, migrations, and tests.
 
+Also implemented: a complete **Winpay (SNAP API)** adapter as a worked example of
+a real gateway integration (VA, QRIS, eWallet).
+
 Deliberately left for later:
 
-- concrete real-world gateway adapters (Midtrans, Xendit, Duitku, OY!, ...) —
+- further concrete gateway adapters (Midtrans, Xendit, Duitku, OY!, ...) —
   the interface is ready, see [Adding a provider](#adding-a-provider);
+- persisting the gateway-specific correlation identifiers the Winpay adapter
+  currently caches in memory (contractId, VA number, channel);
 - refunds as a first-class operation (the pattern is the optional
   `SignatureVerifier`-style extension interface);
 - an admin API for merchants and routing configuration (today: `openpay seed`);
