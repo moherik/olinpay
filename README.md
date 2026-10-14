@@ -3,7 +3,7 @@
 Open source **payment orchestration** for Indonesia.
 
 `openpay.id` sits between your business system and the many payment gateways
-(PJP) in Indonesia — Midtrans, Xendit, Duitku, OY!, and so on. Instead of
+(PJP) in Indonesia — Midtrans, Xendit, DOKU, Duitku, OY!, and so on. Instead of
 integrating each gateway one by one, you integrate **one API** and let the
 orchestrator handle translation, routing, and callbacks.
 
@@ -101,7 +101,8 @@ PJP → webhook engine (receiver) → provider engine (parse + verify)
     ├── mock/               # reference provider (in-memory gateway)
     ├── midtrans/           # real adapter: Midtrans Core API
     ├── winpay/             # real adapter: Winpay SNAP API
-    └── xendit/             # real adapter: Xendit Payments API v3
+    ├── xendit/             # real adapter: Xendit Payments API v3
+    └── doku/               # real adapter: DOKU SNAP API
 ```
 
 `internal/` is private to this module. `pkg/provider` is the public SDK: anyone
@@ -464,6 +465,55 @@ verification token as `CALLBACK_TOKEN`. Test and live mode share the
 `https://api.xendit.co` host; select one with the key (`xnd_development_...` vs
 `xnd_production_...`). The v3 API exposes no forced-expiry operation, so a
 `Cancel` with reason `expire` is performed as a cancel.
+
+### A real-world example: DOKU
+
+`pkg/provider/doku` is a full adapter for [DOKU](https://developers.doku.com),
+an Indonesian PJP that exposes Bank Indonesia's **SNAP API**. It supports:
+
+- **Virtual Account** — one-off (C), open (O) and bill-variable (V) VAs across
+  BCA, BRI, BNI, BNC, Mandiri, Permata, CIMB, BSI, Danamon, Maybank, Sinarmas,
+  BTN and BJB. Each bank has its own create-va path and channel enum.
+- **QRIS** — merchant-presented QR via the snap-adapter endpoints.
+- **eWallet** — DANA and ShopeePay via the direct-debit host-to-host flow.
+
+It demonstrates the parts a real SNAP "Symmetric Signature with Get Token"
+integration needs:
+
+- **Two-step auth** — a B2B access token is fetched from
+  `/authorization/v1/access-token/b2b`, signing `clientID|timestamp` with
+  RSA-SHA256; every transactional request then carries an HMAC-SHA512 signature
+  (keyed by `client_secret`) over
+  `HTTPMethod:EndpointUrl:AccessToken:Lowercase(HexEncode(SHA-256(minify(body)))):Timestamp`
+  plus an `Authorization: Bearer <token>` header. The token is cached and
+  refreshed near its 900s expiry.
+- **Callback verification** — outbound notifications are HMAC-SHA512 signed with
+  the merchant's `client_secret`; the adapter verifies them over the callback
+  path, trying each candidate access token.
+- **Custom acknowledgement** — `WebhookResponder` replies with the SNAP
+  `{"responseCode":"2002500",...}` body so DOKU does not retry.
+- **Gateway-specific correlation** — DOKU addresses status/delete by the VA
+  number and original reference numbers it returned at creation; the adapter
+  keeps a short-lived cache of those, since the unified contract does not carry
+  them.
+
+Enable it with:
+
+```bash
+# .env
+OPENPAY_PROVIDERS=mock,doku
+OPENPAY_PROVIDER_DOKU_CLIENT_ID=MCH-0001-xxxxxxxx
+OPENPAY_PROVIDER_DOKU_CLIENT_SECRET=SK-xxxxxxxxxxxxxxxx
+OPENPAY_PROVIDER_DOKU_PRIVATE_KEY=MIIEowIBAAKCAQB5jAWUddv1tZW6...   # PEM or base64 DER
+OPENPAY_PROVIDER_DOKU_BASE_URL=https://api-sandbox.doku.com
+OPENPAY_PROVIDER_DOKU_PARTNER_SERVICE_ID="   19008"
+OPENPAY_PROVIDER_DOKU_CALLBACK_URL=https://openpay.example/webhooks/doku
+```
+
+Point DOKU's **Notification URL** at `POST /webhooks/doku`. Use
+`https://api.doku.com` as `BASE_URL` in production. DOKU does not expose a
+cancel endpoint for e-wallet host-to-host payments, so `Cancel` returns
+`ErrUnsupportedOperation` for that method.
 
 ## Routing
 

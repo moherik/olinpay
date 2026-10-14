@@ -24,7 +24,7 @@ The four logical components requested in the initial brainstorming are all in on
 | HTTP framework | chi | Used by the API and webhook HTTP servers. |
 | Storage | PostgreSQL via pgx | Durable transactions and outbound delivery retries. |
 | Public adapter contract | `pkg/provider` | Third-party adapters must not import `internal`. |
-| Initial provider scope | Mock provider plus interface | Later user requests added Winpay, Midtrans and Xendit as concrete, real-world examples. |
+| Initial provider scope | Mock provider plus interface | Later user requests added Winpay, Midtrans, Xendit and DOKU as concrete, real-world examples. |
 | Provider registration | `provider.Register(name, factory)` from adapter `init()` | Similar to `database/sql` driver registration; binary blank-imports each shipped adapter. |
 | Routing | Pluggable strategy; built-in `priority`, `round_robin` | Strategies order eligible candidates; create tries them as failover. |
 | Idempotency | `(merchant_id, reference_id)` | A repeated create request should return the existing transaction, not charge again. |
@@ -33,6 +33,7 @@ The four logical components requested in the initial brainstorming are all in on
 | Winpay API | Bank Indonesia SNAP API | Adapter is a worked example, not a claim that every gateway uses SNAP. |
 | Midtrans API | Midtrans Core API (`/v2/charge`) | Charges a specific instrument; a distinct product from the hosted Snap checkout. |
 | Xendit API | Xendit Payments API v3 (`/v3/payment_requests`) | One payment-request endpoint per instrument; v3 is Xendit's recommended API over v2/legacy products. |
+| DOKU API | Bank Indonesia SNAP API | Symmetric-signature + B2B token auth; per-bank VA paths. |
 
 Known architectural tradeoff: create currently calls the external gateway before persisting the transaction. A successful gateway call followed by a local database failure can leave an external payment without a local row. See core comments; do not casually reorder operations without addressing idempotency/reconciliation.
 
@@ -65,6 +66,7 @@ API/core ──> repository interfaces ──> PostgreSQL implementation
 | `pkg/provider/midtrans` | Midtrans Core API adapter (VA, QRIS, eWallet, retail outlet, pay later, card). |
 | `pkg/provider/winpay` | Winpay SNAP adapter and cryptographic helpers. |
 | `pkg/provider/xendit` | Xendit Payments API v3 adapter (VA, QRIS, eWallet, retail outlet, pay later, card). |
+| `pkg/provider/doku` | DOKU SNAP adapter (VA, QRIS, eWallet) with symmetric-signature + B2B token auth. |
 | `migrations` | Forward-applied SQL migrations. |
 
 `internal/` is private to this Go module. Do not make `pkg/provider` import an `internal` package. Keep transport, persistence and gateway-specific logic in their owning layers.
@@ -196,6 +198,26 @@ Config keys: `secret_key` (required; `xnd_development_...` for test mode, `xnd_p
 
 Known limitations: capability/channel codes must be verified against the current Xendit account (availability is account-specific); card payments require a saved payment token (`metadata.payment_token_id`, or `metadata.card_token`); the v3 API exposes no forced-expiry operation, so a Cancel with reason `expire` is performed as a cancel; channel-specific fields can be supplied through `metadata.channel_properties` (a JSON object), which the adapter merges over its generated properties.
 
+### DOKU (SNAP API)
+
+The adapter at `pkg/provider/doku` targets documented DOKU SNAP endpoints:
+
+| Method | Operations |
+| --- | --- |
+| Virtual Account | `POST .../transfer-va/create-va` (per-bank path), `POST /orders/v1.0/transfer-va/status`, `DELETE .../transfer-va/delete-va` |
+| QRIS | `POST /snap-adapter/b2b/v1.0/qr/qr-mpm-generate`, `.../qr-mpm-query`, `.../qr-expire` |
+| eWallet | `POST /direct-debit/core/v{1,2}/debit/payment-host-to-host`, `POST /orders/v1.0/debit/status` |
+
+Authentication uses DOKU's default "Symmetric Signature with Get Token" scheme. A B2B access token is obtained from `POST /authorization/v1/access-token/b2b`, signing `clientID|timestamp` with RSA-SHA256 (PKCS#1 v1.5). Every transactional request then carries an HMAC-SHA512 signature (keyed by `client_secret`) over `HTTPMethod:EndpointUrl:AccessToken:Lowercase(HexEncode(SHA-256(minify(body)))):Timestamp`, plus `Authorization: Bearer <token>`, `X-PARTNER-ID`, `X-EXTERNAL-ID` and `CHANNEL-ID` headers. The token is cached and refreshed shortly before its 900s expiry, and dropped on a 401 so the next call fetches a fresh one.
+
+DOKU does not use one unified VA endpoint: the create-va path and the `additionalInfo.channel` enum differ per issuing bank (BCA, BRI, BNI, BNC, Mandiri, Permata, CIMB, BSI, Danamon, Maybank, Sinarmas, BTN, BJB). The adapter carries a per-bank table; `va_path` config overrides it. The delete-va path is derived by replacing `create-va` with `delete-va`.
+
+Callbacks are authenticated with HMAC-SHA512 over `HTTP-METHOD:RELATIVE-URL:ACCESS-TOKEN:HEX(SHA256(requestBody)):TIMESTAMP` using the merchant's `client_secret`. Because DOKU does not document precisely which access token is folded into the notification signature, the adapter tries each candidate (empty, then the cached B2B token) in constant time. Two notification shapes are recognized: the VA payment notification (`POST /v1/transfer-va/payment`, correlated by `trxId` and the VA number) and the direct-debit notification (`POST /v1.0/debit/notify`, correlated by `originalPartnerReferenceNo` and mapped from `latestTransactionStatus`). `WebhookResponder` replies with the SNAP acknowledgement body (`2002500` for VA, `2005600` otherwise).
+
+Config keys: `client_id` (required), `client_secret` (required), `private_key` (required RSA, PEM or base64 DER), `base_url` (default `https://api-sandbox.doku.com`; production `https://api.doku.com`), `partner_service_id` (8-digit left-space-padded BIN, required for VA), `merchant_id` / `terminal_id` / `postal_code` (required for QRIS), `callback_url` (e-wallet PAY_RETURN url), `channel_id` (default `H2H`), `va_path` (per-bank path override), `default_expiry`, `timeout`.
+
+Known limitations: like Winpay, DOKU addresses status/delete by gateway-specific identifiers (VA number, original reference numbers) that the unified contract does not carry, so the adapter keeps a process-local correlation cache after `CreatePayment` (24-hour TTL); a restart or another replica loses it. Channel availability and the per-bank VA paths must be verified against the current DOKU account; no live sandbox verification has been performed. DOKU exposes no cancel endpoint for e-wallet host-to-host payments, so `Cancel` returns `ErrUnsupportedOperation` for that method.
+
 ## 8. Routing, state and persistence
 
 - Router filters providers by enabled merchant config and `Capabilities()`.
@@ -212,7 +234,7 @@ Schema changes: add a new forward-only migration; update domain, repository inte
 
 - Set a stable `OPENPAY_API_KEY_PEPPER` in production; rotating it invalidates stored key hashes.
 - `.env` is local/ignored; `.env.example` must contain only placeholders.
-- Never disable production gateway callback verification (Winpay with no `public_key` skips verification; Midtrans always verifies with the required server key; Xendit rejects callbacks when `callback_token` is unset).
+- Never disable production gateway callback verification (Winpay with no `public_key` skips verification; Midtrans always verifies with the required server key; Xendit rejects callbacks when `callback_token` is unset; DOKU rejects callbacks when `client_secret` is unset).
 - Verify signature against the required raw/canonical bytes before interpreting callback payload.
 - Enforce merchant ownership on get/list/cancel. Ensure callbacks correlate only to the intended provider and transaction.
 - Use integer money; reject/handle unsupported currency/precision deliberately.
@@ -238,13 +260,13 @@ go test -race ./...
 make check
 ```
 
-Most tests are DB-free. Winpay tests use `httptest` with generated RSA keys; the fake gateway checks signatures on outgoing calls. Midtrans tests use `httptest` against a stub Core API that checks Basic Auth and replays documented response shapes, covering create/inquiry/cancel, the SHA-512 callback signature and status mapping. Xendit tests use `httptest` against a stub Payments API that checks Basic Auth and the `api-version` header, covering every supported method plus create/inquiry/cancel, `x-callback-token` verification and event/status mapping. Live gateway sandbox testing requires valid credentials and current account-specific endpoint details; passing unit tests is not proof of live integration.
+Most tests are DB-free. Winpay tests use `httptest` with generated RSA keys; the fake gateway checks signatures on outgoing calls. Midtrans tests use `httptest` against a stub Core API that checks Basic Auth and replays documented response shapes, covering create/inquiry/cancel, the SHA-512 callback signature and status mapping. Xendit tests use `httptest` against a stub Payments API that checks Basic Auth and the `api-version` header, covering every supported method plus create/inquiry/cancel, `x-callback-token` verification and event/status mapping. DOKU tests use `httptest` against a stub SNAP API that checks the B2B token and HMAC-SHA512 request signatures, covering create/inquiry/cancel for VA/QRIS/eWallet, token caching, and notification signature verification. Live gateway sandbox testing requires valid credentials and current account-specific endpoint details; passing unit tests is not proof of live integration.
 
 ## 11. Current status and roadmap
 
-Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/QRIS/eWallet), Midtrans Core API adapter (VA/QRIS/eWallet/retail outlet/pay later/card), Xendit Payments API v3 adapter (VA/QRIS/eWallet/retail outlet/pay later/card), provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
+Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/QRIS/eWallet), Midtrans Core API adapter (VA/QRIS/eWallet/retail outlet/pay later/card), Xendit Payments API v3 adapter (VA/QRIS/eWallet/retail outlet/pay later/card), DOKU SNAP adapter (VA/QRIS/eWallet), provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
 
-Known/planned: persist Winpay gateway correlation values; live sandbox verification; additional gateway adapters; first-class refunds; admin API; production queue/metrics/observability; stronger recovery for provider success followed by DB failure. Do not claim roadmap items are implemented.
+Known/planned: persist Winpay/DOKU gateway correlation values; live sandbox verification; additional gateway adapters; first-class refunds; admin API; production queue/metrics/observability; stronger recovery for provider success followed by DB failure. Do not claim roadmap items are implemented.
 
 ## 12. Instructions for a future coding agent
 
