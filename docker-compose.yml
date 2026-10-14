@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: openpay-postgres
+    environment:
+      POSTGRES_USER: openpay
+      POSTGRES_PASSWORD: openpay
+      POSTGRES_DB: openpay
+    ports:
+      # Override with OPENPAY_PG_PORT when 5432 is taken on the host.
+      - "${OPENPAY_PG_PORT:-5432}:5432"
+    volumes:
+      - openpay-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openpay -d openpay"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Optional: run the orchestrator itself. Requires migrations to have run
+  # (the entrypoint below applies them on start).
+  openpay:
+    build: .
+    container_name: openpay-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      OPENPAY_ENV: development
+      OPENPAY_LOG_LEVEL: info
+      OPENPAY_API_ADDR: ":8080"
+      OPENPAY_WEBHOOK_ADDR: ":8081"
+      OPENPAY_DATABASE_URL: postgres://openpay:openpay@postgres:5432/openpay?sslmode=disable
+      OPENPAY_PROVIDERS: mock
+      OPENPAY_PROVIDER_MOCK_SECRET: mock-secret
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    command: ["sh", "-c", "openpay migrate && openpay serve"]
+    profiles: ["full"]
+
+volumes:
+  openpay-pgdata:

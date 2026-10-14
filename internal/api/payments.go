@@ -1,0 +1,185 @@
+package api
+
+import (
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/moherik/openpay.id/internal/core"
+	"github.com/moherik/openpay.id/internal/domain"
+	"github.com/moherik/openpay.id/internal/platform/httpx"
+	"github.com/moherik/openpay.id/internal/repository"
+	"github.com/moherik/openpay.id/pkg/provider"
+)
+
+// createPayment handles POST /v1/payments.
+func (s *Server) createPayment(w http.ResponseWriter, r *http.Request) {
+	merchant, ok := merchantFromContext(r.Context())
+	if !ok {
+		fail(w, r, domain.ErrUnauthorized, "")
+		return
+	}
+
+	var body createPaymentRequest
+	if err := httpx.DecodeJSON(r, &body, 0); err != nil {
+		fail(w, r, domain.Invalid("body", err.Error()), "")
+		return
+	}
+
+	items := make([]provider.Item, 0, len(body.Items))
+	for _, it := range body.Items {
+		items = append(items, it.toProvider())
+	}
+
+	cmd := core.CreatePaymentCommand{
+		MerchantID:   merchant.ID,
+		ReferenceID:  body.ReferenceID,
+		Amount:       body.Amount,
+		Currency:     provider.Currency(strings.ToUpper(body.Currency)),
+		Method:       provider.Method(body.Method),
+		Channel:      body.Channel,
+		ProviderName: body.Provider,
+		Customer:     body.Customer.toProvider(),
+		Items:        items,
+		Description:  body.Description,
+		Expiry:       time.Duration(body.ExpirySeconds) * time.Second,
+		Metadata:     body.Metadata,
+	}
+
+	tx, err := s.engine.CreatePayment(r.Context(), cmd)
+	if err != nil {
+		fail(w, r, err, "")
+		return
+	}
+	writeData(w, http.StatusCreated, tx, nil)
+}
+
+// getPayment handles GET /v1/payments/{id}. Use ?sync=true to refresh from the
+// gateway.
+func (s *Server) getPayment(w http.ResponseWriter, r *http.Request) {
+	merchant, ok := merchantFromContext(r.Context())
+	if !ok {
+		fail(w, r, domain.ErrUnauthorized, "")
+		return
+	}
+
+	tx, err := s.engine.Inquiry(r.Context(), core.InquiryQuery{
+		MerchantID:    merchant.ID,
+		TransactionID: chi.URLParam(r, "id"),
+		Sync:          parseBool(r.URL.Query().Get("sync")),
+	})
+	if err != nil {
+		fail(w, r, err, "")
+		return
+	}
+	writeData(w, http.StatusOK, tx, nil)
+}
+
+// listPayments handles GET /v1/payments.
+func (s *Server) listPayments(w http.ResponseWriter, r *http.Request) {
+	merchant, ok := merchantFromContext(r.Context())
+	if !ok {
+		fail(w, r, domain.ErrUnauthorized, "")
+		return
+	}
+	q := r.URL.Query()
+
+	filter := repository.TransactionFilter{
+		MerchantID:   merchant.ID,
+		ReferenceID:  q.Get("reference_id"),
+		ProviderName: q.Get("provider"),
+		Method:       provider.Method(q.Get("method")),
+		Limit:        parseInt(q.Get("limit"), 50),
+		Offset:       parseInt(q.Get("offset"), 0),
+	}
+	if statuses := q["status"]; len(statuses) > 0 {
+		for _, raw := range statuses {
+			for _, part := range strings.Split(raw, ",") {
+				if part = strings.TrimSpace(part); part != "" {
+					filter.Statuses = append(filter.Statuses, provider.Status(part))
+				}
+			}
+		}
+	}
+	if from := parseTime(q.Get("from")); from != nil {
+		filter.From = from
+	}
+	if to := parseTime(q.Get("to")); to != nil {
+		filter.To = to
+	}
+
+	txs, err := s.engine.List(r.Context(), filter)
+	if err != nil {
+		fail(w, r, err, "")
+		return
+	}
+	writeData(w, http.StatusOK, txs, map[string]any{
+		"count":  len(txs),
+		"limit":  filter.Limit,
+		"offset": filter.Offset,
+	})
+}
+
+// cancelPayment handles POST /v1/payments/{id}/cancel.
+func (s *Server) cancelPayment(w http.ResponseWriter, r *http.Request) {
+	merchant, ok := merchantFromContext(r.Context())
+	if !ok {
+		fail(w, r, domain.ErrUnauthorized, "")
+		return
+	}
+
+	var body cancelPaymentRequest
+	// A body is optional: cancelling does not require one.
+	if r.ContentLength > 0 {
+		if err := httpx.DecodeJSON(r, &body, 0); err != nil {
+			fail(w, r, domain.Invalid("body", err.Error()), "")
+			return
+		}
+	}
+
+	tx, err := s.engine.Cancel(r.Context(), core.CancelCommand{
+		MerchantID:    merchant.ID,
+		TransactionID: chi.URLParam(r, "id"),
+		Reason:        body.Reason,
+	})
+	if err != nil {
+		fail(w, r, err, "")
+		return
+	}
+	writeData(w, http.StatusOK, tx, nil)
+}
+
+func parseBool(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "y":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseInt(raw string, def int) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func parseTime(raw string) *time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return &t
+	}
+	return nil
+}

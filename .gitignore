@@ -1,0 +1,21 @@
+# Binaries
+/bin/
+/tmp/
+*.exe
+*.out
+
+# Env
+.env
+.env.local
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+
+# Coverage
+coverage.out
+coverage.html
+
+# OS
+.DS_Store
