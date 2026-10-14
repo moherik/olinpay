@@ -99,7 +99,8 @@ PJP → webhook engine (receiver) → provider engine (parse + verify)
 ├── migrations/             # SQL migrations (applied by `openpay migrate`)
 └── pkg/provider/           # PUBLIC contract every provider implements
     ├── mock/               # reference provider (in-memory gateway)
-    └── winpay/             # real-world example: Winpay SNAP API adapter
+    ├── midtrans/           # real adapter: Midtrans Core API
+    └── winpay/             # real adapter: Winpay SNAP API
 ```
 
 `internal/` is private to this module. `pkg/provider` is the public SDK: anyone
@@ -367,6 +368,49 @@ OPENPAY_PROVIDER_WINPAY_CALLBACK_URL=https://openpay.example/webhooks/winpay
 Point Winpay's merchant callback at `POST /webhooks/winpay`. Leave
 `PUBLIC_KEY` empty to skip signature verification (development only).
 
+### A real-world example: Midtrans
+
+`pkg/provider/midtrans` is a full adapter for [Midtrans](https://docs.midtrans.com/reference/charge-transactions-1)
+built on the **Core API** (`/v2/charge`), which charges a specific instrument
+directly rather than hosting a checkout page. It supports:
+
+- **Virtual Account** — `bank_transfer` for BCA, BNI, BRI, PERMATA and CIMB, and
+  the Mandiri Bill Payment `echannel` product (channel `MANDIRI`).
+- **QRIS** — dynamic merchant-presented QR.
+- **eWallet** — GoPay (`GOPAY`) and ShopeePay (`SHOPEEPAY`), returned as
+  deeplink/redirect actions.
+- **Retail outlet** — Alfamart and Indomaret (`cstore`).
+- **Pay later** — Akulaku.
+- **Card** — via a token from Midtrans' frontend SDK, passed in
+  `metadata.card_token`.
+
+It demonstrates the parts a real Core API integration needs:
+
+- **Basic Auth** — `Authorization: Basic base64("<server_key>:")`.
+- **Callback authentication** — the notification's `signature_key` is verified
+  as `SHA512(order_id + status_code + gross_amount + server_key)`, with
+  `gross_amount` hashed exactly as Midtrans sent it.
+- **Status mapping** — `transaction_status` (plus `fraud_status` for cards) is
+  normalized onto the unified statuses; a challenged card capture stays
+  `pending`.
+- **Idempotency without a cache** — Midtrans keys transactions by the merchant
+  `order_id`, so Inquiry and Cancel address the transaction directly and no
+  in-process correlation cache is required.
+
+Enable it with:
+
+```bash
+# .env
+OPENPAY_PROVIDERS=mock,midtrans
+OPENPAY_PROVIDER_MIDTRANS_SERVER_KEY=SB-Mid-server-xxxxxxxxxxxxxxxx
+OPENPAY_PROVIDER_MIDTRANS_BASE_URL=https://api.sandbox.midtrans.com
+OPENPAY_PROVIDER_MIDTRANS_CALLBACK_URL=https://openpay.example/webhooks/midtrans
+```
+
+Point Midtrans' **Payment Notification URL** at `POST /webhooks/midtrans`, or
+leave `CALLBACK_URL` set so every charge appends it via `X-Append-Notification`.
+Use `https://api.midtrans.com` as `BASE_URL` in production.
+
 ## Routing
 
 Each merchant carries a routing configuration (stored as JSONB):
@@ -469,6 +513,11 @@ The Winpay adapter has its own suite (`pkg/provider/winpay`) that runs against a
 stub SNAP server which validates the RSA signature on every outgoing request, so
 the mapping, signing and callback-parsing logic are exercised end to end.
 
+The Midtrans adapter has an equivalent suite (`pkg/provider/midtrans`) against a
+stub Core API server that checks Basic Auth on every request and replays
+documented response shapes, covering create/inquiry/cancel, the SHA-512 callback
+signature and the status mapping.
+
 ## Status / roadmap
 
 Implemented: the full skeleton — API interface, core engine with routing, the
@@ -478,9 +527,12 @@ outbound dispatcher with retries, PostgreSQL persistence, migrations, and tests.
 Also implemented: a complete **Winpay (SNAP API)** adapter as a worked example of
 a real gateway integration (VA, QRIS, eWallet).
 
+Also implemented: a complete **Midtrans (Core API)** adapter (VA, QRIS, eWallet,
+retail outlet, pay later, card) with callback signature verification.
+
 Deliberately left for later:
 
-- further concrete gateway adapters (Midtrans, Xendit, Duitku, OY!, ...) —
+- further concrete gateway adapters (Xendit, Duitku, OY!, ...) —
   the interface is ready, see [Adding a provider](#adding-a-provider);
 - persisting the gateway-specific correlation identifiers the Winpay adapter
   currently caches in memory (contractId, VA number, channel);
