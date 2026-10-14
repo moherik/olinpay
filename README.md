@@ -40,6 +40,7 @@ orchestrator handle translation, routing, and callbacks.
 - [Project layout](#project-layout)
 - [Quickstart](#quickstart)
 - [API reference](#api-reference)
+- [OpenAPI / Swagger](#openapi--swagger)
 - [Adding a provider](#adding-a-provider)
 - [Routing](#routing)
 - [Webhooks to your system](#webhooks-to-your-system)
@@ -158,6 +159,19 @@ The transaction is now `paid`, and a signed `payment.paid` webhook has been
 queued for delivery to the merchant's callback URL.
 
 ## API reference
+
+The machine-readable API specification is available at
+[`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3.1). Open it in Swagger UI,
+Swagger Editor, or another OpenAPI-compatible tool. The merchant API and
+gateway webhook server use separate server URLs in the document.
+
+When the service is running, open [`http://localhost:8080/docs`](http://localhost:8080/docs)
+for the interactive Swagger UI, or fetch the embedded spec from
+[`http://localhost:8080/openapi.yaml`](http://localhost:8080/openapi.yaml).
+The Swagger UI assets are loaded from a CDN, so the browser needs internet
+access. Click **Authorize** and enter the seeded merchant API key, then use
+**Try it out**. The service itself does not need internet access to serve the
+embedded specification.
 
 All API endpoints require authentication via `X-API-Key: <key>` or
 `Authorization: Bearer <key>`.

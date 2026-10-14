@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,5 +211,31 @@ func TestHealthzIsPublic(t *testing.T) {
 	resp, _ := f.do(t, http.MethodGet, "/healthz", nil, false)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestSwaggerDashboardAndSpecArePublic(t *testing.T) {
+	f := setup(t)
+
+	resp, body := f.do(t, http.MethodGet, "/docs", nil, false)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("docs status = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Errorf("docs Content-Type = %q, want text/html", got)
+	}
+	if !strings.Contains(string(body), "SwaggerUIBundle") || !strings.Contains(string(body), "/openapi.yaml") {
+		t.Errorf("docs page does not load Swagger UI and the embedded spec: %s", body)
+	}
+
+	resp, body = f.do(t, http.MethodGet, "/openapi.yaml", nil, false)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("spec status = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "yaml") {
+		t.Errorf("spec Content-Type = %q, want YAML", got)
+	}
+	if !strings.Contains(string(body), "openapi: 3.1.0") || !strings.Contains(string(body), "/v1/payments") {
+		t.Errorf("unexpected OpenAPI spec response: %s", body)
 	}
 }

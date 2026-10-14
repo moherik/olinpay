@@ -41,6 +41,8 @@ func (s *Server) Router() http.Handler {
 	// Unauthenticated operational endpoints.
 	r.Get("/healthz", s.health)
 	r.Get("/readyz", s.ready)
+	r.Get("/docs", s.swaggerUI)
+	r.Get("/openapi.yaml", s.openAPISpec)
 
 	// Authenticated API.
 	r.Route("/v1", func(r chi.Router) {

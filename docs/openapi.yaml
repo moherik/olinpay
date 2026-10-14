@@ -1,0 +1,759 @@
+openapi: 3.1.0
+info:
+  title: openpay.id API
+  version: 0.1.0
+  summary: Unified Indonesian payment orchestration API
+  description: |
+    Merchant-facing API and gateway-facing inbound webhook endpoint for openpay.id.
+
+    The merchant API listens on port 8080 by default. The inbound provider
+    webhook engine listens on port 8081 by default. Set the server URLs below
+    to match `OPENPAY_API_ADDR` and `OPENPAY_WEBHOOK_ADDR` in your deployment.
+
+    All successful merchant API responses use `{ "data": ..., "meta": ... }`
+    envelopes where applicable. Errors use `{ "error": { "code", "message",
+    "field"? } }`. Amounts are integer minor currency units; for IDR this is
+    rupiah. Payment state is asynchronous: a successful create normally returns
+    `pending`; use callbacks or `GET /v1/payments/{id}?sync=true` for updates.
+  contact:
+    name: openpay.id maintainers
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://localhost:8080
+    description: Merchant API (default local address)
+tags:
+  - name: Payments
+    description: Create, inspect, list, and cancel merchant payments.
+  - name: Providers
+    description: Discover providers enabled in this OpenPay process.
+  - name: Merchant
+    description: Current authenticated merchant.
+  - name: Operations
+    description: Liveness and readiness checks.
+  - name: Inbound provider webhooks
+    description: Gateway callbacks received by the separate webhook server.
+paths:
+  /healthz:
+    get:
+      tags: [Operations]
+      operationId: getApiHealth
+      summary: API liveness check
+      security: []
+      responses:
+        '200':
+          description: API process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+              example: { status: ok }
+  /readyz:
+    get:
+      tags: [Operations]
+      operationId: getApiReadiness
+      summary: API readiness check
+      security: []
+      responses:
+        '200':
+          description: API dependencies have been wired and the process is serving.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ready
+              example: { status: ready }
+  /v1/me:
+    get:
+      tags: [Merchant]
+      operationId: getCurrentMerchant
+      summary: Get the authenticated merchant profile
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Merchant profile. Secret API key material is never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MerchantEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/providers:
+    get:
+      tags: [Providers]
+      operationId: listProviders
+      summary: List providers registered in this process
+      description: |
+        Lists loaded and enabled adapter instances and their advertised
+        capabilities. A provider being listed does not guarantee the merchant's
+        routing configuration allows it or that its gateway credentials work.
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Provider list and count.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderListEnvelope'
+              example:
+                data:
+                  - name: winpay
+                    methods: [virtual_account, qris, ewallet]
+                    channels: [BCA, BNI, QRIS, OVO, DANA, SPAY]
+                    supports_inquiry: true
+                    supports_cancel: true
+                    supports_webhook: true
+                    supports_sandbox: true
+                meta: { count: 1 }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/payments:
+    post:
+      tags: [Payments]
+      operationId: createPayment
+      summary: Create a payment
+      description: |
+        Creates a payment through the selected/routed provider. `reference_id`
+        is the merchant idempotency key, unique within the merchant. Repeating
+        the same reference returns the existing transaction rather than
+        creating another one. If `provider` is supplied it forces that provider;
+        otherwise merchant routing rules choose an eligible provider.
+
+        Provider-specific inputs are passed through `channel` and `metadata`.
+        For Winpay examples, see the repository README and
+        `pkg/provider/winpay` documentation.
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+            examples:
+              winpayVirtualAccount:
+                summary: Winpay Virtual Account
+                value:
+                  reference_id: INV-0001
+                  amount: 150000
+                  currency: IDR
+                  method: virtual_account
+                  channel: BCA
+                  provider: winpay
+                  customer: { name: Budi Santoso, email: budi@example.com }
+                  expiry_seconds: 86400
+              winpayQRIS:
+                summary: Winpay QRIS
+                value:
+                  reference_id: QR-0001
+                  amount: 50000
+                  method: qris
+                  channel: QRIS
+                  provider: winpay
+              winpayEWallet:
+                summary: Winpay OVO
+                value:
+                  reference_id: EW-0001
+                  amount: 10000
+                  method: ewallet
+                  channel: OVO
+                  provider: winpay
+                  customer: { name: Budi Santoso, phone: '0895633156874' }
+      responses:
+        '201':
+          description: Payment created, or existing idempotent transaction returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Conflicting reference or duplicate provider reference.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '422':
+          description: No eligible provider, unsupported operation, or unprocessable request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '502':
+          description: Provider/gateway rejected credentials or returned a gateway error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags: [Payments]
+      operationId: listPayments
+      summary: List payments for the authenticated merchant
+      description: Results are always scoped to the authenticated merchant.
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: reference_id
+          in: query
+          schema: { type: string }
+          description: Exact merchant reference filter.
+        - name: provider
+          in: query
+          schema: { type: string }
+          description: Provider name filter, such as `winpay`.
+        - name: method
+          in: query
+          schema:
+            $ref: '#/components/schemas/PaymentMethod'
+        - name: status
+          in: query
+          description: Repeat this parameter or use comma-separated statuses.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/PaymentStatus'
+          examples:
+            multiple:
+              value: [pending, paid]
+        - name: from
+          in: query
+          description: Inclusive lower timestamp bound (RFC 3339); invalid values are ignored by the current handler.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Upper timestamp bound (RFC 3339); invalid values are ignored by the current handler.
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          description: Page size; current default is 50.
+          schema: { type: integer, default: 50, minimum: 1 }
+        - name: offset
+          in: query
+          description: Number of records to skip; current default is 0.
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        '200':
+          description: Matching transactions and pagination metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/payments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PaymentID'
+    get:
+      tags: [Payments]
+      operationId: getPayment
+      summary: Get a payment
+      description: |
+        Returns a transaction owned by the authenticated merchant. Set
+        `sync=true` to query the provider before returning. Some adapters (the
+        current Winpay adapter) need process-local correlation data for live
+        inquiry; see `docs/PRD.md` for limitations.
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: sync
+          in: query
+          description: Request a live provider inquiry. Values `true`, `1`, `yes`, and `y` enable it.
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Transaction.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          description: Live gateway inquiry failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/payments/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/PaymentID'
+    post:
+      tags: [Payments]
+      operationId: cancelPayment
+      summary: Cancel or expire a payment
+      description: |
+        Requests cancellation for a pending transaction owned by the
+        authenticated merchant. The request body is optional. `reason` is
+        conventionally `cancel` or `expire`; providers may forward it if their
+        gateway supports a reason field.
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelPaymentRequest'
+            example: { reason: cancel }
+      responses:
+        '200':
+          description: Updated transaction.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Transaction cannot be cancelled in its current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '422':
+          description: Provider does not support cancellation for this payment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '502':
+          description: Provider/gateway cancellation failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /webhooks/{provider}:
+    servers:
+      - url: http://localhost:8081
+        description: Inbound provider webhook server (default local address)
+    post:
+      tags: [Inbound provider webhooks]
+      operationId: receiveProviderWebhook
+      summary: Receive a payment-provider callback
+      description: |
+        Gateway-facing endpoint. No merchant API key is required. The selected
+        adapter validates its own signature (when configured) and parses a
+        provider-specific callback body. Exact request fields, signature
+        headers, and success acknowledgement vary by provider. For Winpay, use
+        its SNAP callback format and configure the Winpay public key in
+        production. Successful Winpay acknowledgements are product-specific.
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          description: Registered provider name, for example `winpay` or `mock`.
+          schema: { type: string, pattern: '^[a-z0-9-]+$' }
+        - name: X-SIGNATURE
+          in: header
+          required: false
+          description: Provider-specific signature header; SNAP adapters use this header.
+          schema: { type: string }
+        - name: X-TIMESTAMP
+          in: header
+          required: false
+          description: Provider-specific timestamp header; SNAP adapters use this header.
+          schema: { type: string }
+        - name: X-Mock-Signature
+          in: header
+          required: false
+          description: HMAC-SHA256 signature header for the mock adapter.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Provider-specific callback payload; see the provider's official documentation.
+              additionalProperties: true
+            examples:
+              winpayQris:
+                summary: Winpay QRIS callback (illustrative)
+                value:
+                  originalPartnerReferenceNo: QR-0001
+                  latestTransactionStatus: '00'
+                  amount: { value: '50000.00', currency: IDR }
+                  additionalInfo: { channel: QRIS, contractId: example-contract-id }
+              mock:
+                summary: Mock callback
+                value: { reference_id: INV-0001, status: paid, amount: 150000 }
+      responses:
+        '200':
+          description: Callback accepted. Acknowledgement body is provider-specific.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/GenericWebhookAcknowledgement'
+                  - $ref: '#/components/schemas/WinpayWebhookAcknowledgement'
+              examples:
+                generic:
+                  value: { received: true, transaction_id: trx_example, status: paid }
+                winpayVA:
+                  value: { responseCode: '2002500', responseMessage: Successful }
+                winpayQRIS:
+                  value: { responseCode: '2005200', responseMessage: Successful }
+                winpayEWallet:
+                  value: { responseCode: '2005600', responseMessage: Successful }
+        '400':
+          description: Invalid or uncorrelatable provider callback.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: Provider signature was invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: Provider name is not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Merchant API key. Use this or HTTP Bearer authentication.
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API key
+      description: 'Merchant API key sent as `Authorization: Bearer <key>`.'
+  parameters:
+    PaymentID:
+      name: id
+      in: path
+      required: true
+      description: OpenPay transaction ID (not merchant `reference_id`).
+      schema: { type: string, minLength: 1 }
+  responses:
+    BadRequest:
+      description: Invalid JSON, malformed request, or validation error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Missing or invalid merchant API key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Merchant is inactive/suspended or does not own the transaction.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Transaction does not exist for this merchant.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    InternalError:
+      description: Unexpected internal error; details are hidden from the API response.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    PaymentMethod:
+      type: string
+      enum: [virtual_account, qris, ewallet, retail_outlet, card, paylater, direct_debit]
+    PaymentStatus:
+      type: string
+      enum: [pending, paid, expired, cancelled, failed, refunded, unknown]
+    Currency:
+      type: string
+      minLength: 3
+      maxLength: 3
+      default: IDR
+      example: IDR
+      description: ISO-4217 currency code; currently IDR is the primary supported currency.
+    Customer:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string, description: MSISDN; required by some methods/providers. }
+        reference: { type: string, description: Merchant-side customer identifier. }
+    PaymentItem:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        name: { type: string }
+        price: { type: integer, format: int64, minimum: 0 }
+        quantity: { type: integer, minimum: 0 }
+    CreatePaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [reference_id, amount, method]
+      properties:
+        reference_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Unique per merchant; used as the idempotency key.
+          example: INV-0001
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Amount in the smallest currency unit (rupiah for IDR).
+          example: 150000
+        currency:
+          $ref: '#/components/schemas/Currency'
+        method:
+          $ref: '#/components/schemas/PaymentMethod'
+        channel:
+          type: string
+          description: Optional gateway instrument code, for example BCA, QRIS, OVO, or DANA.
+        provider:
+          type: string
+          description: Optional forced provider name; bypasses provider ordering but still validates capabilities.
+          example: winpay
+        description:
+          type: string
+        expiry_seconds:
+          type: integer
+          minimum: 0
+          description: Requested payment lifetime in seconds; zero uses provider default.
+        customer:
+          $ref: '#/components/schemas/Customer'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaymentItem'
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Opaque provider-specific string values; avoid secrets/PII.
+    PaymentAction:
+      type: object
+      required: [type, value]
+      properties:
+        type:
+          type: string
+          enum: [url, deeplink, qrcode, display]
+        value: { type: string }
+        description: { type: string }
+    Transaction:
+      type: object
+      required: [id, merchant_id, reference_id, provider, method, amount, currency, status, customer, created_at, updated_at]
+      properties:
+        id: { type: string, example: trx_01JEXAMPLE }
+        merchant_id: { type: string }
+        reference_id: { type: string }
+        provider: { type: string, example: winpay }
+        provider_reference: { type: string, description: Gateway transaction/contract reference. }
+        method:
+          $ref: '#/components/schemas/PaymentMethod'
+        channel: { type: string }
+        amount: { type: integer, format: int64, minimum: 0 }
+        currency:
+          $ref: '#/components/schemas/Currency'
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+        payment_code: { type: string, description: VA number, QR payload, or other payment identifier. }
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaymentAction'
+        customer:
+          $ref: '#/components/schemas/Customer'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaymentItem'
+        description: { type: string }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+        failure_reason: { type: string }
+        expires_at: { type: string, format: date-time }
+        paid_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CancelPaymentRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          description: Usually `cancel` or `expire`; forwarded when supported by provider.
+          example: cancel
+    Merchant:
+      type: object
+      required: [id, name, api_key_prefix, callback_url, routing, status, created_at, updated_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        api_key_prefix: { type: string }
+        callback_url: { type: string, format: uri }
+        routing:
+          type: object
+          properties:
+            strategy: { type: string, enum: [priority, round_robin] }
+            providers:
+              type: array
+              items:
+                type: object
+                properties:
+                  name: { type: string }
+                  priority: { type: integer }
+                  weight: { type: integer }
+                  enabled: { type: boolean }
+        status: { type: string, enum: [active, inactive, suspended] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ProviderInfo:
+      type: object
+      required: [name, supports_inquiry, supports_cancel, supports_webhook, supports_sandbox]
+      properties:
+        name: { type: string }
+        methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaymentMethod'
+        channels:
+          type: array
+          items: { type: string }
+        supports_inquiry: { type: boolean }
+        supports_cancel: { type: boolean }
+        supports_webhook: { type: boolean }
+        supports_sandbox: { type: boolean }
+    TransactionEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Transaction'
+        meta:
+          type: object
+          additionalProperties: true
+    TransactionListEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        meta:
+          type: object
+          required: [count, limit, offset]
+          properties:
+            count: { type: integer }
+            limit: { type: integer }
+            offset: { type: integer }
+    ProviderListEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderInfo'
+        meta:
+          type: object
+          required: [count]
+          properties:
+            count: { type: integer }
+    MerchantEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Merchant'
+        meta:
+          type: object
+          additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: validation_error }
+            message: { type: string, example: amount must be greater than zero }
+            field: { type: string, description: Present for field validation errors. }
+    GenericWebhookAcknowledgement:
+      type: object
+      required: [received, transaction_id, status]
+      properties:
+        received: { type: boolean, const: true }
+        transaction_id: { type: string }
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+    WinpayWebhookAcknowledgement:
+      type: object
+      required: [responseCode, responseMessage]
+      properties:
+        responseCode:
+          type: string
+          enum: ['2002500', '2005200', '2005600']
+        responseMessage:
+          type: string
+          const: Successful
