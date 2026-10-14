@@ -1008,6 +1008,16 @@ func TestCapabilities(t *testing.T) {
 	if !caps.SupportsChannel("BCA") || !caps.SupportsChannel("QRIS") {
 		t.Error("expected VA and QRIS channels to be advertised")
 	}
+	// Channel matching must tolerate the case/whitespace callers use.
+	if !caps.SupportsChannel("bca") || !caps.SupportsChannel("  ovo  ") {
+		t.Error("expected channel matching to be case-insensitive")
+	}
+	if caps.SupportsChannel("NOPE") {
+		t.Error("expected an unknown channel to be rejected")
+	}
+	if !caps.SupportsChannel("") {
+		t.Error("an empty channel must always be accepted")
+	}
 	if !caps.SupportsInquiry || !caps.SupportsCancel || !caps.SupportsWebhook {
 		t.Error("expected inquiry, cancel and webhook support")
 	}

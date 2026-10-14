@@ -1,6 +1,9 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // Provider is the single interface that every payment gateway integration must
 // implement. It is deliberately small: four operations covering the entire
@@ -68,13 +71,17 @@ func (c Capabilities) SupportsMethod(m Method) bool {
 }
 
 // SupportsChannel reports whether the capability set allows the given channel.
-// An empty Channels slice means "supports everything".
+// An empty Channels slice means "supports everything". Matching is
+// case-insensitive and ignores surrounding whitespace, because channel codes
+// are gateway identifiers that callers write in whatever case they prefer
+// (e.g. "bca" vs the advertised "BCA").
 func (c Capabilities) SupportsChannel(ch string) bool {
+	ch = strings.TrimSpace(ch)
 	if ch == "" || len(c.Channels) == 0 {
 		return true
 	}
 	for _, v := range c.Channels {
-		if v == ch {
+		if strings.EqualFold(strings.TrimSpace(v), ch) {
 			return true
 		}
 	}
