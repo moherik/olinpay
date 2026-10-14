@@ -100,7 +100,8 @@ PJP → webhook engine (receiver) → provider engine (parse + verify)
 └── pkg/provider/           # PUBLIC contract every provider implements
     ├── mock/               # reference provider (in-memory gateway)
     ├── midtrans/           # real adapter: Midtrans Core API
-    └── winpay/             # real adapter: Winpay SNAP API
+    ├── winpay/             # real adapter: Winpay SNAP API
+    └── xendit/             # real adapter: Xendit Payments API v3
 ```
 
 `internal/` is private to this module. `pkg/provider` is the public SDK: anyone
@@ -411,6 +412,59 @@ Point Midtrans' **Payment Notification URL** at `POST /webhooks/midtrans`, or
 leave `CALLBACK_URL` set so every charge appends it via `X-Append-Notification`.
 Use `https://api.midtrans.com` as `BASE_URL` in production.
 
+### A real-world example: Xendit
+
+`pkg/provider/xendit` is a full adapter for [Xendit](https://docs.xendit.co/apidocs/create-payment-request)
+built on the **Payments API v3** (`POST /v3/payment_requests`), a single payment
+request endpoint that selects a concrete instrument with a `channel_code`. It
+supports:
+
+- **Virtual Account** — `BCA_VIRTUAL_ACCOUNT`, `BNI_VIRTUAL_ACCOUNT`,
+  `BRI_VIRTUAL_ACCOUNT`, `MANDIRI_VIRTUAL_ACCOUNT`, `PERMATA_VIRTUAL_ACCOUNT`,
+  `CIMB_VIRTUAL_ACCOUNT`, `BSI_VIRTUAL_ACCOUNT`, `BNC_VIRTUAL_ACCOUNT`,
+  `MUAMALAT_VIRTUAL_ACCOUNT` and `BJB_VIRTUAL_ACCOUNT`.
+- **QRIS** — the dynamic merchant-presented QR (`channel_code QRIS`), returned as
+  a `QR_STRING` action and as the payment code.
+- **eWallet** — OVO, DANA, ShopeePay, LinkAja, JeniusPay, AstraPay, GoPay and
+  Nexcash, returned as redirect/deeplink actions.
+- **Retail outlet** — Alfamart and Indomaret (reusable payment code).
+- **Pay later** — Akulaku, Kredivo, Atome and Indodana.
+- **Card** — via a saved Xendit payment token, passed in
+  `metadata.payment_token_id` (or `metadata.card_token`).
+
+It demonstrates the parts a real Payments API v3 integration needs:
+
+- **Basic Auth** — `Authorization: Basic base64("<secret_key>:")`, plus the
+  `api-version` header (`2024-11-11` by default) on every call.
+- **Callback authentication** — the shared `x-callback-token` header is compared
+  in constant time against `CALLBACK_TOKEN`; callbacks are rejected when the
+  token is not configured.
+- **Status mapping** — the payment request status (`REQUIRES_ACTION`,
+  `SUCCEEDED`, `FAILED`, `EXPIRED`, `CANCELED`, ...) and the payment status are
+  normalized onto the unified statuses; refund events are mapped by name.
+- **Idempotency without a cache** — Xendit keys a payment request by its own
+  `payment_request_id`, returned as `provider_reference`, so Inquiry and Cancel
+  address the request directly.
+- **Escape hatch** — channel-specific fields (for example an OVO account number)
+  can be passed in `metadata.channel_properties` as a JSON object.
+
+Enable it with:
+
+```bash
+# .env
+OPENPAY_PROVIDERS=mock,xendit
+OPENPAY_PROVIDER_XENDIT_SECRET_KEY=xnd_development_xxxxxxxxxxxxxxxx
+OPENPAY_PROVIDER_XENDIT_BASE_URL=https://api.xendit.co
+OPENPAY_PROVIDER_XENDIT_CALLBACK_TOKEN=xxxxxxxxxxxxxxxx
+OPENPAY_PROVIDER_XENDIT_RETURN_URL=https://shop.example/payment/done
+```
+
+Point Xendit's webhook URL at `POST /webhooks/xendit` and set the same
+verification token as `CALLBACK_TOKEN`. Test and live mode share the
+`https://api.xendit.co` host; select one with the key (`xnd_development_...` vs
+`xnd_production_...`). The v3 API exposes no forced-expiry operation, so a
+`Cancel` with reason `expire` is performed as a cancel.
+
 ## Routing
 
 Each merchant carries a routing configuration (stored as JSONB):
@@ -518,6 +572,12 @@ stub Core API server that checks Basic Auth on every request and replays
 documented response shapes, covering create/inquiry/cancel, the SHA-512 callback
 signature and the status mapping.
 
+The Xendit adapter has a suite (`pkg/provider/xendit`) against a stub Payments
+API server that checks Basic Auth and the `api-version` header on every request
+and replays documented request/response shapes, covering every supported method,
+create/inquiry/cancel, the `x-callback-token` verification and the event/status
+mapping.
+
 ## Status / roadmap
 
 Implemented: the full skeleton — API interface, core engine with routing, the
@@ -530,9 +590,12 @@ a real gateway integration (VA, QRIS, eWallet).
 Also implemented: a complete **Midtrans (Core API)** adapter (VA, QRIS, eWallet,
 retail outlet, pay later, card) with callback signature verification.
 
+Also implemented: a complete **Xendit (Payments API v3)** adapter (VA, QRIS,
+eWallet, retail outlet, pay later, card) with callback token verification.
+
 Deliberately left for later:
 
-- further concrete gateway adapters (Xendit, Duitku, OY!, ...) —
+- further concrete gateway adapters (Duitku, OY!, ...) —
   the interface is ready, see [Adding a provider](#adding-a-provider);
 - persisting the gateway-specific correlation identifiers the Winpay adapter
   currently caches in memory (contractId, VA number, channel);

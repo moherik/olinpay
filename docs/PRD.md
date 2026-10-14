@@ -24,7 +24,7 @@ The four logical components requested in the initial brainstorming are all in on
 | HTTP framework | chi | Used by the API and webhook HTTP servers. |
 | Storage | PostgreSQL via pgx | Durable transactions and outbound delivery retries. |
 | Public adapter contract | `pkg/provider` | Third-party adapters must not import `internal`. |
-| Initial provider scope | Mock provider plus interface | Later user requests added Winpay and Midtrans as concrete, real-world examples. |
+| Initial provider scope | Mock provider plus interface | Later user requests added Winpay, Midtrans and Xendit as concrete, real-world examples. |
 | Provider registration | `provider.Register(name, factory)` from adapter `init()` | Similar to `database/sql` driver registration; binary blank-imports each shipped adapter. |
 | Routing | Pluggable strategy; built-in `priority`, `round_robin` | Strategies order eligible candidates; create tries them as failover. |
 | Idempotency | `(merchant_id, reference_id)` | A repeated create request should return the existing transaction, not charge again. |
@@ -32,6 +32,7 @@ The four logical components requested in the initial brainstorming are all in on
 | Testing | In-memory repositories and `httptest` | Routine tests should not require a database or provider credentials. |
 | Winpay API | Bank Indonesia SNAP API | Adapter is a worked example, not a claim that every gateway uses SNAP. |
 | Midtrans API | Midtrans Core API (`/v2/charge`) | Charges a specific instrument; a distinct product from the hosted Snap checkout. |
+| Xendit API | Xendit Payments API v3 (`/v3/payment_requests`) | One payment-request endpoint per instrument; v3 is Xendit's recommended API over v2/legacy products. |
 
 Known architectural tradeoff: create currently calls the external gateway before persisting the transaction. A successful gateway call followed by a local database failure can leave an external payment without a local row. See core comments; do not casually reorder operations without addressing idempotency/reconciliation.
 
@@ -63,6 +64,7 @@ API/core ──> repository interfaces ──> PostgreSQL implementation
 | `pkg/provider/mock` | Deterministic in-memory gateway and simple reference adapter. |
 | `pkg/provider/midtrans` | Midtrans Core API adapter (VA, QRIS, eWallet, retail outlet, pay later, card). |
 | `pkg/provider/winpay` | Winpay SNAP adapter and cryptographic helpers. |
+| `pkg/provider/xendit` | Xendit Payments API v3 adapter (VA, QRIS, eWallet, retail outlet, pay later, card). |
 | `migrations` | Forward-applied SQL migrations. |
 
 `internal/` is private to this Go module. Do not make `pkg/provider` import an `internal` package. Keep transport, persistence and gateway-specific logic in their owning layers.
@@ -176,6 +178,24 @@ Config keys: `server_key` (required), `base_url` (sandbox default `https://api.s
 
 Known limitations: capability/channel codes must be verified against the current Midtrans account (some banks are only available on BI-SNAP); card payments require a token obtained on the client (`metadata.card_token`); refunds are not first-class (the platform has no refund operation yet).
 
+### Xendit (Payments API v3)
+
+The adapter at `pkg/provider/xendit` targets documented Xendit Payments API v3 endpoints:
+
+| Method | Operations |
+| --- | --- |
+| VA / QRIS / eWallet / pay later / card | `POST /v3/payment_requests` (`type PAY`, channel-specific `channel_code`) |
+| Retail outlet | `POST /v3/payment_requests` (`type REUSABLE_PAYMENT_CODE`, `ALFAMART`/`INDOMARET`) |
+| Any | `GET /v3/payment_requests/{payment_request_id}`, `POST /v3/payment_requests/{payment_request_id}/cancel` |
+
+Authentication is HTTP Basic with the secret key as username and an empty password, plus an `api-version` header (`2024-11-11` by default). Callbacks are authenticated by comparing the shared `x-callback-token` header in constant time; when `callback_token` is not configured the adapter rejects callbacks rather than trusting them. The payment request status (`REQUIRES_ACTION`, `ACCEPTING_PAYMENTS`, `AUTHORIZED`, `SUCCEEDED`, `FAILED`, `EXPIRED`, `CANCELED`) and the payment status are normalized onto unified statuses; refund events (`refund.succeeded`/`refund.failed`) are mapped by event name.
+
+Because Xendit keys a payment request by its own `payment_request_id` (returned as `ProviderReference`), Inquiry and Cancel address the request directly, so no process-local correlation cache is needed. The merchant `reference_id` is passed through and echoed on callbacks.
+
+Config keys: `secret_key` (required; `xnd_development_...` for test mode, `xnd_production_...` for live), `base_url` (default `https://api.xendit.co`; test and live share the host and are selected by the key), `api_version` (default `2024-11-11`), `callback_token` (webhook verification token; empty rejects callbacks), `return_url` (where the payer returns after redirect flows), `default_expiry` (applied to VAs and QRIS only), `timeout`.
+
+Known limitations: capability/channel codes must be verified against the current Xendit account (availability is account-specific); card payments require a saved payment token (`metadata.payment_token_id`, or `metadata.card_token`); the v3 API exposes no forced-expiry operation, so a Cancel with reason `expire` is performed as a cancel; channel-specific fields can be supplied through `metadata.channel_properties` (a JSON object), which the adapter merges over its generated properties.
+
 ## 8. Routing, state and persistence
 
 - Router filters providers by enabled merchant config and `Capabilities()`.
@@ -192,7 +212,7 @@ Schema changes: add a new forward-only migration; update domain, repository inte
 
 - Set a stable `OPENPAY_API_KEY_PEPPER` in production; rotating it invalidates stored key hashes.
 - `.env` is local/ignored; `.env.example` must contain only placeholders.
-- Never disable production gateway callback verification (Winpay with no `public_key` skips verification; Midtrans always verifies with the required server key).
+- Never disable production gateway callback verification (Winpay with no `public_key` skips verification; Midtrans always verifies with the required server key; Xendit rejects callbacks when `callback_token` is unset).
 - Verify signature against the required raw/canonical bytes before interpreting callback payload.
 - Enforce merchant ownership on get/list/cancel. Ensure callbacks correlate only to the intended provider and transaction.
 - Use integer money; reject/handle unsupported currency/precision deliberately.
@@ -218,11 +238,11 @@ go test -race ./...
 make check
 ```
 
-Most tests are DB-free. Winpay tests use `httptest` with generated RSA keys; the fake gateway checks signatures on outgoing calls. Midtrans tests use `httptest` against a stub Core API that checks Basic Auth and replays documented response shapes, covering create/inquiry/cancel, the SHA-512 callback signature and status mapping. Live gateway sandbox testing requires valid credentials and current account-specific endpoint details; passing unit tests is not proof of live integration.
+Most tests are DB-free. Winpay tests use `httptest` with generated RSA keys; the fake gateway checks signatures on outgoing calls. Midtrans tests use `httptest` against a stub Core API that checks Basic Auth and replays documented response shapes, covering create/inquiry/cancel, the SHA-512 callback signature and status mapping. Xendit tests use `httptest` against a stub Payments API that checks Basic Auth and the `api-version` header, covering every supported method plus create/inquiry/cancel, `x-callback-token` verification and event/status mapping. Live gateway sandbox testing requires valid credentials and current account-specific endpoint details; passing unit tests is not proof of live integration.
 
 ## 11. Current status and roadmap
 
-Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/QRIS/eWallet), Midtrans Core API adapter (VA/QRIS/eWallet/retail outlet/pay later/card), provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
+Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/QRIS/eWallet), Midtrans Core API adapter (VA/QRIS/eWallet/retail outlet/pay later/card), Xendit Payments API v3 adapter (VA/QRIS/eWallet/retail outlet/pay later/card), provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
 
 Known/planned: persist Winpay gateway correlation values; live sandbox verification; additional gateway adapters; first-class refunds; admin API; production queue/metrics/observability; stronger recovery for provider success followed by DB failure. Do not claim roadmap items are implemented.
 

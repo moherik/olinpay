@@ -40,6 +40,7 @@ import (
 	_ "github.com/moherik/openpay.id/pkg/provider/midtrans"
 	_ "github.com/moherik/openpay.id/pkg/provider/mock"
 	_ "github.com/moherik/openpay.id/pkg/provider/winpay"
+	_ "github.com/moherik/openpay.id/pkg/provider/xendit"
 )
 
 // version is overridable at build time with -ldflags "-X main.version=...".
