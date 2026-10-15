@@ -391,6 +391,15 @@ provider configuration, routing order editing, API key create and revoke, the
 provider catalog with a field schema per adapter, users and roles, and the audit
 log.
 
+It also has a standalone routing page with a node graph editor: an entry node, then
+conditions that branch on amount, method, channel or environment, and outputs that
+either pick a provider, edit the request metadata, or return a defined JSON body.
+Edges connect by dragging or through the node config selects, every graph is
+validated (single entry, reachability, no cycles, required outputs connected,
+config completeness) with the issues listed per node, and `View compiled` shows the
+config the graph would compile to. Graphs are kept per merchant and environment in
+the browser session and are never sent anywhere.
+
 Both themes are built. On a first visit with no stored choice the console follows
 the operating system, the reader can choose Light, Dark or Match system in the
 account menu, and the choice is stored per browser. Every colour is a token, so the

@@ -147,6 +147,16 @@ export const IconPlus = (p: IconProps) => (
   </Base>
 );
 
+export const IconRouting = (p: IconProps) => (
+  <Base {...p}>
+    <circle cx="5" cy="12" r="2" />
+    <circle cx="19" cy="6.5" r="2" />
+    <circle cx="19" cy="17.5" r="2" />
+    <path d="M7 12h2.5c3 0 5.5-2.5 5.5-5.5H17" />
+    <path d="M7 12h2.5c3 0 5.5 2.5 5.5 5.5H17" />
+  </Base>
+);
+
 export const IconLogout = (p: IconProps) => (
   <Base {...p}>
     <path d="M14 4h4v16h-4" />

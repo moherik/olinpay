@@ -9,6 +9,7 @@ import {
   IconMerchants,
   IconOverview,
   IconProviders,
+  IconRouting,
   IconTransactions,
   IconUsers,
   IconWebhooks,
@@ -47,6 +48,7 @@ const navGroups = [
     label: "Configure",
     items: [
       { href: "/merchants", label: "Merchants", icon: IconMerchants },
+      { href: "/routing", label: "Routing", icon: IconRouting },
       { href: "/providers", label: "Providers", icon: IconProviders },
       { href: "/users", label: "Users and roles", icon: IconUsers },
     ],

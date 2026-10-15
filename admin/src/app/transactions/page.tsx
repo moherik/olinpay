@@ -43,10 +43,21 @@ export default function TransactionsPage() {
   const router = useRouter();
   const { environment, notify, transactions, updateTransaction } = useApp();
   const [query, setQuery] = useState("");
+  const [merchant, setMerchant] = useState("all");
   const [status, setStatus] = useState("all");
   const [provider, setProvider] = useState("all");
   const [cancelTarget, setCancelTarget] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+
+  const merchantOptions = useMemo(() => {
+    const names = Array.from(
+      new Set(transactions.map((row) => row.merchant)),
+    ).sort();
+    return [
+      { value: "all", label: "All merchants" },
+      ...names.map((name) => ({ value: name, label: name })),
+    ];
+  }, [transactions]);
 
   const providerOptions = useMemo(() => {
     const names = Array.from(
@@ -62,6 +73,7 @@ export default function TransactionsPage() {
     const needle = query.trim().toLowerCase();
     return transactions.filter((row) => {
       if (row.environment !== environment) return false;
+      if (merchant !== "all" && row.merchant !== merchant) return false;
       if (status !== "all" && row.status !== status) return false;
       if (provider !== "all" && row.provider !== provider) return false;
       if (
@@ -74,11 +86,13 @@ export default function TransactionsPage() {
       }
       return true;
     });
-  }, [transactions, environment, status, provider, query]);
+  }, [transactions, environment, merchant, status, provider, query]);
 
-  const filtersActive = status !== "all" || provider !== "all" || query !== "";
+  const filtersActive =
+    merchant !== "all" || status !== "all" || provider !== "all" || query !== "";
 
   function clearFilters() {
+    setMerchant("all");
     setStatus("all");
     setProvider("all");
     setQuery("");
@@ -164,6 +178,15 @@ export default function TransactionsPage() {
             placeholder="DEMO-000181"
           />
         </Field>
+        <Field label="Merchant" className="w-[180px]">
+          <SelectControl
+            ariaLabel="Filter by merchant"
+            value={merchant}
+            onValueChange={setMerchant}
+            options={merchantOptions}
+            className="w-full"
+          />
+        </Field>
         <Field label="Status" className="w-[150px]">
           <SelectControl
             ariaLabel="Filter by status"
@@ -197,7 +220,7 @@ export default function TransactionsPage() {
         {filtered.length === 0 ? (
           <EmptyState
             title="No transactions match these filters"
-            body="Nothing in this environment matches the current reference, status and provider. Clear the filters to see the full list."
+            body="Nothing in this environment matches the current reference, merchant, status and provider. Clear the filters to see the full list."
             action={
               <Button variant="secondary" onClick={clearFilters}>
                 Clear filters

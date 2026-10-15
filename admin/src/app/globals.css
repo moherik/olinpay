@@ -5,6 +5,29 @@
  * Both themes are defined from the same variables: components only ever name a
  * token, never a colour, so a theme switch is a variable change and nothing more.
  */
+
+/* React Flow theming */
+.routing-flow {
+  --xy-background-color: var(--color-canvas);
+  --xy-edge-stroke: var(--color-border);
+  --xy-edge-stroke-selected: var(--color-accent);
+  --xy-edge-label-color: var(--color-secondary);
+  --xy-edge-label-background-color: var(--color-surface);
+  --xy-connectionline-stroke: var(--color-accent);
+  --xy-handle-background-color: var(--color-surface);
+  --xy-handle-border-color: var(--color-accent);
+  --xy-controls-button-background-color: var(--color-surface);
+  --xy-controls-button-background-color-hover: var(--color-surface-muted);
+  --xy-controls-button-border-color: var(--color-border);
+  --xy-controls-button-color: var(--color-secondary);
+  --xy-controls-box-shadow: var(--shadow-raised);
+  --xy-attribution-background-color: var(--color-surface);
+}
+.react-flow__node.selectable:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 @theme {
   --color-canvas: #f5f6f8;
   --color-surface: #ffffff;
