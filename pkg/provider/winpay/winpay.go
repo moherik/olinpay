@@ -187,7 +187,7 @@ func New(cfg provider.Config) (*Provider, error) {
 		callbackURL:   strings.TrimSpace(cfg.Get("callback_url", "")),
 		callbackPath:  strings.TrimSpace(cfg.Get("callback_path", "")),
 		defaultExpiry: defaultExpiry,
-		client:        &http.Client{Timeout: defaultTimeout},
+		client:        provider.NewHTTPClient(Name, defaultTimeout),
 		records:       make(map[string]*record),
 	}
 

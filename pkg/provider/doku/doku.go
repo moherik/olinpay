@@ -226,7 +226,7 @@ func New(cfg provider.Config) (*Provider, error) {
 		channelID:     cfg.Get("channel_id", defaultChannelID),
 		vaPath:        strings.TrimSpace(cfg.Get("va_path", "")),
 		defaultExpiry: defaultExpiry,
-		client:        &http.Client{Timeout: defaultTimeout},
+		client:        provider.NewHTTPClient(Name, defaultTimeout),
 		records:       make(map[string]*record),
 	}
 

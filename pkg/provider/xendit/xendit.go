@@ -129,7 +129,7 @@ func New(cfg provider.Config) (*Provider, error) {
 		callbackToken: strings.TrimSpace(cfg.Get("callback_token", "")),
 		returnURL:     strings.TrimSpace(cfg.Get("return_url", "")),
 		defaultExpiry: defaultExpiry,
-		client:        &http.Client{Timeout: defaultTimeout},
+		client:        provider.NewHTTPClient(Name, defaultTimeout),
 	}
 	if raw := cfg.Get("timeout", ""); raw != "" {
 		d, err := time.ParseDuration(raw)

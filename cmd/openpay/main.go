@@ -197,6 +197,10 @@ func listen(log *slog.Logger, srv *http.Server, name string, errCh chan<- error)
 // buildProviders constructs every provider listed in configuration by looking
 // up its registered factory.
 func buildProviders(cfg *config.Config, log *slog.Logger) (*provider.Registry, error) {
+	// Route every outbound provider API call through the application logger so
+	// gateway requests and responses are traceable.
+	provider.SetHTTPLogger(log)
+
 	registry := provider.NewRegistry()
 	for _, name := range cfg.Providers {
 		if _, err := registry.Build(name, cfg.ProviderConfigs[name]); err != nil {

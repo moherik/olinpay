@@ -99,7 +99,7 @@ PJP → webhook engine (receiver) → provider engine (parse + verify)
 ├── migrations/             # SQL migrations (applied by `openpay migrate`)
 └── pkg/provider/           # PUBLIC contract every provider implements
     ├── mock/               # reference provider (in-memory gateway)
-    ├── midtrans/           # real adapter: Midtrans Core API
+    ├── midtrans/           # real adapter: Midtrans BI-SNAP API
     ├── winpay/             # real adapter: Winpay SNAP API
     ├── xendit/             # real adapter: Xendit Payments API v3
     └── doku/               # real adapter: DOKU SNAP API
@@ -250,32 +250,34 @@ A provider never touches the database or the core engine; it only translates.
 ### Skeleton
 
 ```go
-package midtrans
+package acmegateway
 
 import (
     "context"
     "net/http"
+    "time"
 
     "github.com/moherik/openpay.id/pkg/provider"
 )
 
-const Name = "midtrans"
+const Name = "acmegateway"
 
 type Provider struct {
-    serverKey string
-    baseURL   string
-    client    *http.Client
+    apiKey  string
+    baseURL string
+    client  *http.Client
 }
 
 func New(cfg provider.Config) (*Provider, error) {
-    key, err := cfg.Required("server_key")
+    key, err := cfg.Required("api_key")
     if err != nil {
         return nil, err
     }
     return &Provider{
-        serverKey: key,
-        baseURL:   cfg.Get("base_url", "https://api.midtrans.com"),
-        client:    &http.Client{Timeout: 30 * time.Second},
+        apiKey:  key,
+        baseURL: cfg.Get("base_url", "https://api.acmegateway.example"),
+        // Traces every request/response through the host logger.
+        client: provider.NewHTTPClient(Name, 30*time.Second),
     }, nil
 }
 
@@ -317,15 +319,15 @@ Then enable it:
 
 ```bash
 # .env
-OPENPAY_PROVIDERS=mock,midtrans
-OPENPAY_PROVIDER_MIDTRANS_SERVER_KEY=SB-Mid-server-xxxx
+OPENPAY_PROVIDERS=mock,acmegateway
+OPENPAY_PROVIDER_ACMEGATEWAY_API_KEY=sk_live_xxxx
 ```
 
 Import the package for its side effects in `cmd/openpay/main.go` (or let it be
 discovered by the host application):
 
 ```go
-import _ "github.com/moherik/openpay.id/pkg/provider/midtrans"
+import _ "github.com/moherik/openpay.id/pkg/provider/acmegateway"
 ```
 
 ### Rules for a good adapter
@@ -336,6 +338,9 @@ import _ "github.com/moherik/openpay.id/pkg/provider/midtrans"
 3. Treat `ReferenceID` as an idempotency key.
 4. Keep `ParseWebhook` pure — no I/O, no side effects.
 5. Wrap failures in `*provider.Error` so the core engine can react.
+6. Build the HTTP client with `provider.NewHTTPClient(Name, timeout)` so every
+   gateway request and response is traced (with credentials redacted) through the
+   application logger.
 
 ### A real-world example: Winpay
 
@@ -372,46 +377,66 @@ Point Winpay's merchant callback at `POST /webhooks/winpay`. Leave
 
 ### A real-world example: Midtrans
 
-`pkg/provider/midtrans` is a full adapter for [Midtrans](https://docs.midtrans.com/reference/charge-transactions-1)
-built on the **Core API** (`/v2/charge`), which charges a specific instrument
-directly rather than hosting a checkout page. It supports:
+`pkg/provider/midtrans` is a full adapter for [Midtrans](https://docs.midtrans.com/reference/core-api-snap-open-api-overview)
+built on Midtrans' **BI-SNAP Core API** (Bank Indonesia's *Standar Nasional Open
+API Pembayaran*), which charges a specific instrument directly rather than
+hosting a checkout page. It supports:
 
-- **Virtual Account** — `bank_transfer` for BCA, BNI, BRI, PERMATA and CIMB, and
-  the Mandiri Bill Payment `echannel` product (channel `MANDIRI`).
-- **QRIS** — dynamic merchant-presented QR.
-- **eWallet** — GoPay (`GOPAY`) and ShopeePay (`SHOPEEPAY`), returned as
-  deeplink/redirect actions.
-- **Retail outlet** — Alfamart and Indomaret (`cstore`).
-- **Pay later** — Akulaku.
-- **Card** — via a token from Midtrans' frontend SDK, passed in
-  `metadata.card_token`.
+- **Virtual Account** — bank transfer for PERMATA, BCA, MANDIRI, CIMB, BNI, BRI,
+  DANAMON, BSI, SEABANK and SAQU (channel codes are the bank names).
+- **QRIS** — dynamic merchant-presented QR (`channel` `QRIS`).
+- **eWallet** — GoPay (`GOPAY`), ShopeePay (`SHOPEEPAY`) and DANA (`DANA`) via the
+  direct-debit host-to-host flow, returned as deeplink/redirect actions.
 
-It demonstrates the parts a real Core API integration needs:
+It demonstrates the parts a real BI-SNAP integration needs:
 
-- **Basic Auth** — `Authorization: Basic base64("<server_key>:")`.
-- **Callback authentication** — the notification's `signature_key` is verified
-  as `SHA512(order_id + status_code + gross_amount + server_key)`, with
-  `gross_amount` hashed exactly as Midtrans sent it.
-- **Status mapping** — `transaction_status` (plus `fraud_status` for cards) is
-  normalized onto the unified statuses; a challenged card capture stays
-  `pending`.
-- **Idempotency without a cache** — Midtrans keys transactions by the merchant
-  `order_id`, so Inquiry and Cancel address the transaction directly and no
-  in-process correlation cache is required.
+- **Two signature schemes** — a B2B access token signed with RSA-SHA256 over
+  `clientID|timestamp`, then an HMAC-SHA512 `X-SIGNATURE` over
+  `HTTPMethod:EndpointUrl:AccessToken:SHA-256(body):X-TIMESTAMP` on every
+  transactional call. The token is cached and refreshed on expiry or a 401.
+- **Callback authentication** — Midtrans signs notifications with its own RSA
+  key; the `X-SIGNATURE` header is verified with the configured `public_key`.
+- **Status mapping** — the SNAP numeric status (`00` paid, `03` pending, `05`
+  cancelled, `06` failed, `08` expired, ...) is normalized onto the unified
+  statuses.
+- **An in-process correlation cache** — Midtrans' status/cancel endpoints are
+  addressed by gateway identifiers (the VA number, the original reference
+  numbers, the original `X-EXTERNAL-ID`) that the unified contract does not carry
+  between calls, so `CreatePayment` caches them. A restart loses the cache; a
+  production deployment would persist these identifiers alongside the
+  transaction.
 
 Enable it with:
 
 ```bash
 # .env
 OPENPAY_PROVIDERS=mock,midtrans
-OPENPAY_PROVIDER_MIDTRANS_SERVER_KEY=SB-Mid-server-xxxxxxxxxxxxxxxx
-OPENPAY_PROVIDER_MIDTRANS_BASE_URL=https://api.sandbox.midtrans.com
-OPENPAY_PROVIDER_MIDTRANS_CALLBACK_URL=https://openpay.example/webhooks/midtrans
+OPENPAY_PROVIDER_MIDTRANS_CLIENT_ID=<client id>
+OPENPAY_PROVIDER_MIDTRANS_CLIENT_SECRET=<client secret>
+OPENPAY_PROVIDER_MIDTRANS_PRIVATE_KEY=<PEM or base64 DER>
+OPENPAY_PROVIDER_MIDTRANS_PUBLIC_KEY=<Midtrans public key>   # for callback verification
+OPENPAY_PROVIDER_MIDTRANS_PARTNER_ID=<X-PARTNER-ID>
+OPENPAY_PROVIDER_MIDTRANS_MERCHANT_ID=<merchant id>          # VA; default QRIS merchant id
+OPENPAY_PROVIDER_MIDTRANS_PARTNER_SERVICE_ID=<8-char BIN>    # VA only
+OPENPAY_PROVIDER_MIDTRANS_BASE_URL=https://merchants.sbx.midtrans.com
 ```
 
-Point Midtrans' **Payment Notification URL** at `POST /webhooks/midtrans`, or
-leave `CALLBACK_URL` set so every charge appends it via `X-Append-Notification`.
-Use `https://api.midtrans.com` as `BASE_URL` in production.
+Point Midtrans' notification URL at `POST /webhooks/midtrans`. Two values are
+passed per payment through `metadata`:
+
+- `return_url` — e-wallet only: the browser URL the payer returns to after
+  paying (Midtrans `urlParams` `PAY_RETURN`). The dashboard `PAY_RETURN` url is
+  used when it is omitted.
+- `sub_merchant_id` — QRIS only: the merchant id that is unique per
+  (sub)merchant and addresses the QRIS transaction; the configured `MERCHANT_ID`
+  is the fallback when it is omitted.
+
+Use `https://merchants.midtrans.com` as `BASE_URL` in production.
+
+Capabilities differ from the legacy Core API: BI-SNAP supports only virtual
+account, QRIS and e-wallet, so retail outlet, pay later and card are **not**
+available. Channel availability is account-specific and has not been verified
+against the live sandbox.
 
 ### A real-world example: Xendit
 
@@ -592,12 +617,29 @@ See [`.env.example`](.env.example) for the full list. The essentials:
 | `OPENPAY_DATABASE_URL` | local postgres | PostgreSQL DSN |
 | `OPENPAY_API_ADDR` | `:8080` | API interface listen address |
 | `OPENPAY_WEBHOOK_ADDR` | `:8081` | Webhook engine listen address |
+| `OPENPAY_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `OPENPAY_PROVIDERS` | – | Comma separated provider names to enable |
 | `OPENPAY_PROVIDER_<NAME>_<KEY>` | – | Per-provider config, e.g. `OPENPAY_PROVIDER_MOCK_SECRET` |
 | `OPENPAY_API_KEY_PEPPER` | – | Secret mixed into API-key hashing |
 | `OPENPAY_WEBHOOK_MAX_ATTEMPTS` | `6` | Outbound delivery attempts |
 
 CLI: `openpay serve`, `openpay migrate`, `openpay seed`, `openpay version`.
+
+### Provider API logging
+
+Every outbound call an adapter makes to a payment gateway is logged through the
+JSON logger:
+
+- At `info` (the default) each call emits one line with the provider, HTTP
+  method, URL, response status and duration. Failed calls and non-2xx responses
+  log at `warn`.
+- At `debug` the request and response headers and bodies are added.
+
+Credentials never reach the log: sensitive headers (`Authorization`,
+`X-SIGNATURE`, client keys, cookies) and sensitive JSON fields (access tokens,
+charge tokens, secrets, card data) are redacted as `***`, and bodies are capped
+at 8 KiB. Tracing is installed automatically by the host binary; adapters opt in
+by constructing their client with `provider.NewHTTPClient`.
 
 ## Testing
 
@@ -613,14 +655,18 @@ signature verification, routing strategies, the core engine (idempotency,
 webhook reconciliation, cancel), the API surface, and the inbound webhook
 engine.
 
+The provider suites also cover the shared request/response tracing transport in
+`pkg/provider` (metadata at info, redacted bodies at debug).
+
 The Winpay adapter has its own suite (`pkg/provider/winpay`) that runs against a
 stub SNAP server which validates the RSA signature on every outgoing request, so
 the mapping, signing and callback-parsing logic are exercised end to end.
 
 The Midtrans adapter has an equivalent suite (`pkg/provider/midtrans`) against a
-stub Core API server that checks Basic Auth on every request and replays
-documented response shapes, covering create/inquiry/cancel, the SHA-512 callback
-signature and the status mapping.
+stub BI-SNAP server that verifies the RSA get-token signature and the
+HMAC-SHA512 transaction signatures on every request and replays documented
+response shapes, covering create/inquiry/cancel for VA/QRIS/e-wallet, token
+caching, the RSA notification signature and the status mapping.
 
 The Xendit adapter has a suite (`pkg/provider/xendit`) against a stub Payments
 API server that checks Basic Auth and the `api-version` header on every request
@@ -637,8 +683,8 @@ outbound dispatcher with retries, PostgreSQL persistence, migrations, and tests.
 Also implemented: a complete **Winpay (SNAP API)** adapter as a worked example of
 a real gateway integration (VA, QRIS, eWallet).
 
-Also implemented: a complete **Midtrans (Core API)** adapter (VA, QRIS, eWallet,
-retail outlet, pay later, card) with callback signature verification.
+Also implemented: a complete **Midtrans (BI-SNAP Core API)** adapter (VA, QRIS,
+eWallet) with token and callback signature verification.
 
 Also implemented: a complete **Xendit (Payments API v3)** adapter (VA, QRIS,
 eWallet, retail outlet, pay later, card) with callback token verification.
@@ -647,8 +693,9 @@ Deliberately left for later:
 
 - further concrete gateway adapters (Duitku, OY!, ...) —
   the interface is ready, see [Adding a provider](#adding-a-provider);
-- persisting the gateway-specific correlation identifiers the Winpay adapter
-  currently caches in memory (contractId, VA number, channel);
+- persisting the gateway-specific correlation identifiers the Winpay, DOKU and
+  Midtrans adapters currently cache in memory (contractId, VA number, original
+  reference numbers, `X-EXTERNAL-ID`);
 - refunds as a first-class operation (the pattern is the optional
   `SignatureVerifier`-style extension interface);
 - an admin API for merchants and routing configuration (today: `openpay seed`);

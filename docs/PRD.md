@@ -31,7 +31,7 @@ The four logical components requested in the initial brainstorming are all in on
 | Outbound webhooks | Persist before delivery; retry with exponential backoff | Avoid losing events across process restarts. |
 | Testing | In-memory repositories and `httptest` | Routine tests should not require a database or provider credentials. |
 | Winpay API | Bank Indonesia SNAP API | Adapter is a worked example, not a claim that every gateway uses SNAP. |
-| Midtrans API | Midtrans Core API (`/v2/charge`) | Charges a specific instrument; a distinct product from the hosted Snap checkout. |
+| Midtrans API | Midtrans BI-SNAP Core API | Asymmetric-signature + B2B token auth; a distinct product from the legacy Core API and the hosted Snap checkout. |
 | Xendit API | Xendit Payments API v3 (`/v3/payment_requests`) | One payment-request endpoint per instrument; v3 is Xendit's recommended API over v2/legacy products. |
 | DOKU API | Bank Indonesia SNAP API | Symmetric-signature + B2B token auth; per-bank VA paths. |
 
@@ -63,7 +63,7 @@ API/core ──> repository interfaces ──> PostgreSQL implementation
 | `internal/platform` | Logging, IDs, HTTP helpers, migration runner; no business rules. |
 | `pkg/provider` | Public provider contract, unified types/statuses/errors, registry and webhook request. |
 | `pkg/provider/mock` | Deterministic in-memory gateway and simple reference adapter. |
-| `pkg/provider/midtrans` | Midtrans Core API adapter (VA, QRIS, eWallet, retail outlet, pay later, card). |
+| `pkg/provider/midtrans` | Midtrans BI-SNAP adapter (VA, QRIS, eWallet) with asymmetric-signature + B2B token auth. |
 | `pkg/provider/winpay` | Winpay SNAP adapter and cryptographic helpers. |
 | `pkg/provider/xendit` | Xendit Payments API v3 adapter (VA, QRIS, eWallet, retail outlet, pay later, card). |
 | `pkg/provider/doku` | DOKU SNAP adapter (VA, QRIS, eWallet) with symmetric-signature + B2B token auth. |
@@ -162,23 +162,27 @@ Winpay inquiry/status/cancel require gateway-specific values such as `contractId
 
 Channel codes and which method they belong to must be verified against current Winpay account documentation; capability lists are advertised, and matching trims whitespace and ignores case.
 
-### Midtrans (Core API)
+### Midtrans (BI-SNAP API)
 
-The adapter at `pkg/provider/midtrans` targets documented Midtrans Core API endpoints:
+The adapter at `pkg/provider/midtrans` targets Midtrans' BI-SNAP Core API (Bank Indonesia's *Standar Nasional Open API Pembayaran*), not the legacy Core API (`/v2/charge`) nor the hosted Snap checkout product:
 
 | Method | Operations |
 | --- | --- |
-| VA / Mandiri Bill | `POST /v2/charge` (`bank_transfer`, `echannel`) |
-| QRIS / eWallet / retail outlet / pay later / card | `POST /v2/charge` (`qris`, `gopay`, `shopeepay`, `cstore`, `akulaku`, `credit_card`) |
-| Any | `GET /v2/{order_id}/status`, `POST /v2/{order_id}/cancel`, `POST /v2/{order_id}/expire` |
+| Virtual Account | `POST /v1.0/transfer-va/create-va`, `POST /v1.0/transfer-va/status`, `POST /v1.0/transfer-va/delete-va` |
+| QRIS | `POST /v1.0/qr/qr-mpm-generate`, `POST /v1.0/qr/qr-mpm-query`, `POST /v1.0/qr/qr-mpm-cancel` |
+| eWallet | `POST /v1.0/debit/payment-host-to-host`, `POST /v1.0/debit/status`, `POST /v1.0/debit/cancel` |
 
-Authentication is HTTP Basic with the server key as username and an empty password. Callbacks are authenticated by recomputing `signature_key = SHA512(order_id + status_code + gross_amount + server_key)`, hashing `gross_amount` exactly as received. `transaction_status` (plus `fraud_status` for cards) maps onto unified statuses; a challenged capture stays `pending`.
+Authentication uses two signatures. A B2B access token is obtained from `POST /v1.0/access-token/b2b`, signing `clientID|timestamp` with RSA-SHA256 (PKCS#1 v1.5). Every transactional request then carries an HMAC-SHA512 signature (keyed by `client_secret`) over `HTTPMethod:EndpointUrl:AccessToken:Lowercase(HexEncode(SHA-256(minify(body)))):Timestamp`, plus `Authorization: Bearer <token>`, `X-PARTNER-ID`, `X-EXTERNAL-ID` and `CHANNEL-ID` headers. The token is cached and refreshed shortly before its 900s expiry, and dropped on a 401.
 
-Because Midtrans keys transactions by the merchant `order_id`, Inquiry and Cancel address the transaction by `ReferenceID`, so no process-local correlation cache is needed. A reused `order_id` is rejected by the gateway as a duplicate (`ErrDuplicateReference`).
+`X-EXTERNAL-ID` is Midtrans' per-request numeric idempotency key (unique for 24 hours). The adapter generates a fresh value for each request and replays the create-time value as `originalExternalId` on status/cancel calls.
 
-Config keys: `server_key` (required), `base_url` (sandbox default `https://api.sandbox.midtrans.com`; production is `https://api.midtrans.com`), `callback_url` (optional; appended per charge via `X-Append-Notification`), `default_expiry` (applied to VAs and retail outlets only), `timeout`.
+Inbound notifications are signed by Midtrans with its own RSA key (SHA256withRSA over `HTTPMethod:EndpointUrl:Lowercase(HexEncode(SHA-256(minify(body)))):X-TIMESTAMP`, no access token) and verified with the configured `public_key`; when `public_key` is not set the adapter rejects callbacks rather than trusting them. The SNAP numeric status (`00` paid, `01`/`02`/`03` pending, `04` refunded, `05` cancelled, `06`/`07`/`09` failed, `08` expired) maps onto unified statuses; the VA payment notification uses `additionalInfo.paymentFlagStatus` and falls back to paid.
 
-Known limitations: capability/channel codes must be verified against the current Midtrans account (some banks are only available on BI-SNAP); card payments require a token obtained on the client (`metadata.card_token`); refunds are not first-class (the platform has no refund operation yet).
+Because Midtrans' status/cancel endpoints are addressed by gateway identifiers (the VA number, the original reference numbers, the create-time `X-EXTERNAL-ID`) that the unified contract does not carry between calls, the adapter caches them in process memory after `CreatePayment`, with a 24-hour TTL. Restart or another replica loses the mapping and inquiry/cancel fails with `ErrNotFound`. This is a production-readiness gap, the same one as the Winpay and DOKU adapters; the correct fix is to persist provider correlation metadata with the transaction.
+
+Config keys: `client_id` (required, `X-CLIENT-KEY`), `client_secret` (required, HMAC key), `private_key` (required; PEM or base64 DER), `public_key` (Midtrans RSA public key; empty rejects callbacks), `base_url` (sandbox default `https://merchants.sbx.midtrans.com`; production is `https://merchants.midtrans.com`), `partner_id` (`X-PARTNER-ID`, defaults to `client_id`), `merchant_id` (required for VA; default QRIS merchant id), `partner_service_id` (8-char left-space-padded BIN, required for VA), `channel_id` (`CHANNEL-ID`, default `12345`), `device_id` (optional `X-DEVICE-ID`), `qris_acquirer` (QRIS acquirer, default `gopay`), `default_expiry` (default 24h), `timeout`. Two per-payment values travel in `metadata`: `return_url` (e-wallet `PAY_RETURN` url) and `sub_merchant_id` (QRIS merchant id, unique per (sub)merchant).
+
+Known limitations: BI-SNAP covers only virtual account, QRIS and e-wallet, so retail outlet, pay later and card are **not** supported (a deliberate scope reduction from the legacy adapter); capability/channel codes must be verified against the current Midtrans account; the exact `EndpointUrl` Midtrans folds into the notification signature is documented only as "EndpointUrl" and no endpoint header is sent, so verification tries the received path and the three documented notification paths (this has not been verified against a live gateway); refunds are not first-class (the platform has no refund operation yet).
 
 ### Xendit (Payments API v3)
 
@@ -234,12 +238,13 @@ Schema changes: add a new forward-only migration; update domain, repository inte
 
 - Set a stable `OPENPAY_API_KEY_PEPPER` in production; rotating it invalidates stored key hashes.
 - `.env` is local/ignored; `.env.example` must contain only placeholders.
-- Never disable production gateway callback verification (Winpay with no `public_key` skips verification; Midtrans always verifies with the required server key; Xendit rejects callbacks when `callback_token` is unset; DOKU rejects callbacks when `client_secret` is unset).
+- Never disable production gateway callback verification (Winpay with no `public_key` skips verification; Midtrans rejects callbacks when `public_key` is unset; Xendit rejects callbacks when `callback_token` is unset; DOKU rejects callbacks when `client_secret` is unset).
 - Verify signature against the required raw/canonical bytes before interpreting callback payload.
 - Enforce merchant ownership on get/list/cancel. Ensure callbacks correlate only to the intended provider and transaction.
 - Use integer money; reject/handle unsupported currency/precision deliberately.
 - Duplicate callbacks and status transitions must be idempotent; do not cause duplicate merchant effects.
 - Respect context cancellation, HTTP timeouts, body limits; do not log credentials, secrets, private keys, or unnecessary PII.
+- Provider API calls are traced through the application logger: metadata (provider, method, URL, status, duration) at info, request/response headers and bodies at debug. Sensitive headers and JSON fields are redacted before logging and bodies are size-capped.
 - Be explicit about partial failure: gateway success with local persistence failure, timeout with unknown gateway outcome, and retries are core payment correctness concerns.
 
 ## 10. Build, run and test
@@ -260,13 +265,13 @@ go test -race ./...
 make check
 ```
 
-Most tests are DB-free. Winpay tests use `httptest` with generated RSA keys; the fake gateway checks signatures on outgoing calls. Midtrans tests use `httptest` against a stub Core API that checks Basic Auth and replays documented response shapes, covering create/inquiry/cancel, the SHA-512 callback signature and status mapping. Xendit tests use `httptest` against a stub Payments API that checks Basic Auth and the `api-version` header, covering every supported method plus create/inquiry/cancel, `x-callback-token` verification and event/status mapping. DOKU tests use `httptest` against a stub SNAP API that checks the B2B token and HMAC-SHA512 request signatures, covering create/inquiry/cancel for VA/QRIS/eWallet, token caching, and notification signature verification. Live gateway sandbox testing requires valid credentials and current account-specific endpoint details; passing unit tests is not proof of live integration.
+Most tests are DB-free. `pkg/provider` tests cover the shared request/response tracing transport (metadata at info, redacted bodies at debug, no leaks of authorization headers or token fields). Winpay tests use `httptest` with generated RSA keys; the fake gateway checks signatures on outgoing calls. Midtrans tests use `httptest` against a stub BI-SNAP API that checks the B2B token and HMAC-SHA512 request signatures, covering create/inquiry/cancel for VA/QRIS/eWallet, token caching, RSA notification verification and status mapping. Xendit tests use `httptest` against a stub Payments API that checks Basic Auth and the `api-version` header, covering every supported method plus create/inquiry/cancel, `x-callback-token` verification and event/status mapping. DOKU tests use `httptest` against a stub SNAP API that checks the B2B token and HMAC-SHA512 request signatures, covering create/inquiry/cancel for VA/QRIS/eWallet, token caching, and notification signature verification. Live gateway sandbox testing requires valid credentials and current account-specific endpoint details; passing unit tests is not proof of live integration.
 
 ## 11. Current status and roadmap
 
-Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/QRIS/eWallet), Midtrans Core API adapter (VA/QRIS/eWallet/retail outlet/pay later/card), Xendit Payments API v3 adapter (VA/QRIS/eWallet/retail outlet/pay later/card), DOKU SNAP adapter (VA/QRIS/eWallet), provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
+Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/QRIS/eWallet), Midtrans BI-SNAP adapter (VA/QRIS/eWallet), Xendit Payments API v3 adapter (VA/QRIS/eWallet/retail outlet/pay later/card), DOKU SNAP adapter (VA/QRIS/eWallet), provider API request/response tracing, provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
 
-Known/planned: persist Winpay/DOKU gateway correlation values; live sandbox verification; additional gateway adapters; first-class refunds; admin API; production queue/metrics/observability; stronger recovery for provider success followed by DB failure. Do not claim roadmap items are implemented.
+Known/planned: persist Winpay/Midtrans/DOKU gateway correlation values; live sandbox verification; additional gateway adapters; first-class refunds; admin API; production queue/metrics/dashboards (provider-request tracing already ships); stronger recovery for provider success followed by DB failure. Do not claim roadmap items are implemented.
 
 ## 12. Instructions for a future coding agent
 

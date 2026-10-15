@@ -1,6 +1,9 @@
 package midtrans
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"strconv"
 	"strings"
@@ -18,81 +21,91 @@ var jakarta = func() *time.Location {
 	return time.FixedZone("WIB", 7*60*60)
 }()
 
-// midtransTimeLayout is the "2021-06-15 18:45:28" shape Midtrans uses for
-// transaction_time, settlement_time and expiry_time.
-const midtransTimeLayout = "2006-01-02 15:04:05"
+// QRIS service code, reported on qr-mpm-query requests and responses.
+const qrisServiceCode = "47"
 
-// vaBanks maps the unified VA channel codes onto Midtrans' bank_transfer bank
-// identifiers. Mandiri is handled separately because it uses the echannel
-// (Mandiri Bill Payment) product rather than bank_transfer.
+// Debit (e-wallet) service code, reported on debit/status requests.
+const debitServiceCode = "54"
+
+// maxExpiry caps the requested payment lifetime.
+const maxExpiry = 180 * 24 * time.Hour
+
+// vaBanks maps the unified VA channel code onto the lowercase bank slug
+// Midtrans expects in additionalInfo.bank.
 var vaBanks = map[string]string{
+	"PERMATA": "permata",
 	"BCA":     "bca",
+	"MANDIRI": "mandiri",
+	"CIMB":    "cimb",
 	"BNI":     "bni",
 	"BRI":     "bri",
-	"PERMATA": "permata",
-	"CIMB":    "cimb",
+	"DANAMON": "danamon",
+	"BSI":     "bsi",
+	"SEABANK": "seabank",
+	"SAQU":    "saqu",
 }
 
-// ewalletTypes maps e-wallet channel codes onto Midtrans payment types.
-var ewalletTypes = map[string]string{
-	"GOPAY":     paymentTypeGoPay,
-	"SHOPEEPAY": paymentTypeShopeePay,
+// ewalletChannels maps the unified e-wallet channel code onto the payMethod /
+// payOption enum Midtrans expects on the direct-debit request.
+var ewalletChannels = map[string]string{
+	"GOPAY":     "GOPAY",
+	"SHOPEEPAY": "SHOPEEPAY",
+	"DANA":      "DANA",
 }
 
-// cstoreStores maps over-the-counter channel codes onto Midtrans store codes.
-var cstoreStores = map[string]string{
-	"ALFAMART":  "alfamart",
-	"INDOMARET": "indomaret",
-}
-
-// channelMandiri is the unified channel for Mandiri Bill Payment.
-const channelMandiri = "MANDIRI"
-
-// channelAkulaku is the unified channel for the Akulaku pay-later product.
-const channelAkulaku = "AKULAKU"
-
-// channelCard is the unified channel for card payments.
-const channelCard = "CARD"
-
-// mapTransactionStatus translates Midtrans' "transaction_status" (plus
-// "fraud_status" for cards) into a unified [provider.Status].
-func mapTransactionStatus(status, fraud string) provider.Status {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "capture":
-		// A capture flagged for manual review is not settled yet.
-		if strings.EqualFold(strings.TrimSpace(fraud), "challenge") {
-			return provider.StatusPending
-		}
+// mapTransactionStatus translates Midtrans' SNAP numeric transaction status
+// onto a unified [provider.Status]:
+//
+//	00 Success, 01 Initiated, 02 Paying, 03 Pending, 04 Refunded,
+//	05 Canceled, 06 Failed, 07 Not Found, 08 Expiry, 09 Rejected
+func mapTransactionStatus(code string) provider.Status {
+	switch strings.TrimSpace(code) {
+	case "00":
 		return provider.StatusPaid
-	case "settlement":
-		return provider.StatusPaid
-	case "pending", "authorize":
+	case "01", "02", "03":
 		return provider.StatusPending
-	case "deny":
-		return provider.StatusFailed
-	case "cancel":
-		return provider.StatusCancelled
-	case "expire":
-		return provider.StatusExpired
-	case "refund", "partial_refund":
+	case "04":
 		return provider.StatusRefunded
-	case "chargeback", "partial_chargeback":
+	case "05":
+		return provider.StatusCancelled
+	case "06", "07", "09":
 		return provider.StatusFailed
+	case "08":
+		return provider.StatusExpired
 	default:
 		return provider.StatusUnknown
 	}
 }
 
-// parseAmount converts a Midtrans decimal amount string ("25000.00", "10000")
-// into the contract's integer smallest-unit amount (rupiah for IDR).
-//
-// Midtrans always renders amounts with two decimal places. Sub-unit fractions
-// are rejected rather than silently rounded: IDR has no practical fractional
-// unit, so encountering one means we are looking at something we cannot map.
+// mapVAStatus derives a unified status from the VA status response. It prefers
+// the numeric paymentFlagStatus and falls back to the textual reason when the
+// code is absent.
+func mapVAStatus(data vaStatusData) provider.Status {
+	if status := mapTransactionStatus(data.PaymentFlagStatus); status != provider.StatusUnknown {
+		return status
+	}
+	reason := strings.ToLower(data.PaymentFlagReason.English + " " + data.PaymentFlagReason.Indonesia)
+	switch {
+	case strings.Contains(reason, "paid"), strings.Contains(reason, "success"), strings.Contains(reason, "berhasil"):
+		return provider.StatusPaid
+	case strings.Contains(reason, "cancel"):
+		return provider.StatusCancelled
+	case strings.Contains(reason, "fail"), strings.Contains(reason, "reject"):
+		return provider.StatusFailed
+	case strings.Contains(reason, "expire"):
+		return provider.StatusExpired
+	default:
+		return provider.StatusPending
+	}
+}
+
+// parseAmount converts a Midtrans decimal amount string ("10000.00") into the
+// unified integer smallest-unit amount (rupiah for IDR). Sub-unit fractions are
+// rejected rather than silently rounded: IDR has no practical fractional unit.
 func parseAmount(value string) (provider.Amount, error) {
 	raw := strings.TrimSpace(value)
 	if raw == "" {
-		return 0, nil
+		return 0, fmt.Errorf("midtrans: empty amount")
 	}
 	units, fraction, _ := strings.Cut(raw, ".")
 	units = strings.TrimLeft(units, "+")
@@ -108,22 +121,125 @@ func parseAmount(value string) (provider.Amount, error) {
 
 // amountOr parses the gateway amount, falling back to the value captured at
 // creation time when the field is absent or malformed.
-func amountOr(value string, fallback provider.Amount) provider.Amount {
-	if parsed, err := parseAmount(value); err == nil && parsed > 0 {
-		return parsed
+func amountOr(payload *amountPayload, fallback provider.Amount) provider.Amount {
+	if payload != nil {
+		if parsed, err := parseAmount(payload.Value); err == nil && parsed > 0 {
+			return parsed
+		}
 	}
 	return fallback
 }
 
-// parseTime parses a Midtrans timestamp, which is expressed in WIB without an
-// explicit offset. It returns nil when the value is empty or unparseable so
-// callers can treat the field as optional.
+// formatAmount renders an integer minor-unit amount as the 2-decimal string
+// Midtrans expects, e.g. 10000 -> "10000.00".
+func formatAmount(a provider.Amount) string {
+	return strconv.FormatInt(a, 10) + ".00"
+}
+
+// amountPayloadOf builds the request amount object for an IDR amount.
+func amountPayloadOf(a provider.Amount) *amountPayload {
+	return &amountPayload{Value: formatAmount(a), Currency: string(provider.IDR)}
+}
+
+// classifyCode maps a Midtrans SNAP response code onto a contract sentinel so
+// the core engine can react with errors.Is. SNAP response codes are
+// HTTP-status + service-code + case-code; the leading three digits follow HTTP
+// conventions.
+func classifyCode(code string) error {
+	switch {
+	case strings.HasPrefix(code, "200"):
+		return nil
+	case strings.HasPrefix(code, "401"), strings.HasPrefix(code, "403"):
+		return provider.ErrUnauthorized
+	case strings.HasPrefix(code, "404"):
+		return provider.ErrNotFound
+	case strings.HasPrefix(code, "409"):
+		return provider.ErrDuplicateReference
+	case strings.HasPrefix(code, "400"), strings.HasPrefix(code, "422"):
+		return provider.ErrInvalidRequest
+	default:
+		return provider.ErrGateway
+	}
+}
+
+// accountName builds a virtual-account holder name, falling back to the merchant
+// reference so the field is never blank.
+func accountName(customerName, reference string) string {
+	name := strings.Join(strings.Fields(customerName), " ")
+	if name == "" {
+		name = "OPENPAY " + reference
+	}
+	if len(name) > 255 {
+		name = strings.TrimSpace(name[:255])
+	}
+	return name
+}
+
+// splitName divides a display name into first and last name at the first
+// whitespace, matching Midtrans' customerDetails shape.
+func splitName(name string) (first, last string) {
+	fields := strings.Fields(name)
+	switch len(fields) {
+	case 0:
+		return "", ""
+	case 1:
+		return fields[0], ""
+	default:
+		return fields[0], strings.Join(fields[1:], " ")
+	}
+}
+
+// customerNo derives a deterministic, digits-only customer number from the
+// merchant reference when the caller does not supply one. Midtrans composes the
+// VA number from partnerServiceId + customerNo and trims or zero-pads it to the
+// issuing bank's length rules, so any short numeric value is acceptable.
+func customerNo(reference string) string {
+	sum := sha256.Sum256([]byte(reference))
+	n := binary.BigEndian.Uint64(sum[:8]) % 10_000_000_000
+	return fmt.Sprintf("%010d", n)
+}
+
+// firstNonEmpty returns the first argument that is not blank.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// externalID returns a fresh value for the X-EXTERNAL-ID header. Midtrans
+// treats it as a per-request idempotency key: it must be numeric, unique for the
+// day, and is later replayed as the originalExternalId of status/cancel calls.
+// The value combines the wall clock with random digits so it stays unique across
+// processes and instances.
+func externalID() string {
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	n := binary.BigEndian.Uint32(buf[:])
+	return fmt.Sprintf("%d%09d", time.Now().UnixNano(), n%1_000_000_000)
+}
+
+// truncate bounds an error message taken from a raw gateway response.
+func truncate(s string) string {
+	const max = 512
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
+// parseTime parses a Midtrans SNAP timestamp. It returns nil when the value is
+// empty or unparseable so callers can treat the field as optional.
 func parseTime(value string) *time.Time {
 	raw := strings.TrimSpace(value)
 	if raw == "" {
 		return nil
 	}
-	for _, layout := range []string{midtransTimeLayout, time.RFC3339Nano, time.RFC3339} {
+	for _, layout := range []string{iso8601Layout, time.RFC3339Nano, time.RFC3339} {
 		if t, err := time.ParseInLocation(layout, raw, jakarta); err == nil {
 			return &t
 		}
@@ -137,202 +253,4 @@ func paidAtIfPaid(status provider.Status, t *time.Time) *time.Time {
 		return t
 	}
 	return nil
-}
-
-// customExpiryFrom renders a lifetime as the minute-based custom_expiry object
-// Midtrans expects. A non-positive duration yields nil (gateway default).
-func customExpiryFrom(d time.Duration) *customExpiry {
-	if d <= 0 {
-		return nil
-	}
-	minutes := int(d / time.Minute)
-	if d%time.Minute != 0 {
-		minutes++
-	}
-	if minutes < 1 {
-		minutes = 1
-	}
-	return &customExpiry{ExpiryDuration: minutes, Unit: "minute"}
-}
-
-// classifyStatus maps an unsuccessful Midtrans response onto a contract
-// sentinel so the core engine can react with errors.Is.
-func classifyStatus(httpStatus int, code string) error {
-	switch {
-	case httpStatus == 401 || httpStatus == 403:
-		return provider.ErrUnauthorized
-	case httpStatus == 404:
-		return provider.ErrNotFound
-	case httpStatus == 406:
-		// Midtrans reports a reused order_id as "406 Not Acceptable".
-		return provider.ErrDuplicateReference
-	case httpStatus == 400 || httpStatus == 402 || httpStatus == 422:
-		return provider.ErrInvalidRequest
-	}
-	switch {
-	case strings.HasPrefix(code, "401"), strings.HasPrefix(code, "403"):
-		return provider.ErrUnauthorized
-	case strings.HasPrefix(code, "404"):
-		return provider.ErrNotFound
-	case strings.HasPrefix(code, "406"):
-		return provider.ErrDuplicateReference
-	case strings.HasPrefix(code, "4"):
-		return provider.ErrInvalidRequest
-	default:
-		return provider.ErrGateway
-	}
-}
-
-// customerDetailsFrom splits a unified customer name into Midtrans' first/last
-// name fields, since Midtrans does not accept a single "name".
-func customerDetailsFrom(c provider.Customer) *customerDetails {
-	first, last := splitName(c.Name)
-	if first == "" && c.Email == "" && c.Phone == "" {
-		return nil
-	}
-	return &customerDetails{
-		FirstName: first,
-		LastName:  last,
-		Email:     strings.TrimSpace(c.Email),
-		Phone:     strings.TrimSpace(c.Phone),
-	}
-}
-
-// splitName divides a display name into a first and last name at the last
-// whitespace. Midtrans requires first_name when customer_details is present.
-func splitName(name string) (first, last string) {
-	fields := strings.Fields(name)
-	switch len(fields) {
-	case 0:
-		return "", ""
-	case 1:
-		return fields[0], ""
-	default:
-		return fields[0], strings.Join(fields[1:], " ")
-	}
-}
-
-// itemDetailsFrom translates unified line items into Midtrans' item_details.
-func itemDetailsFrom(items []provider.Item) []itemDetail {
-	if len(items) == 0 {
-		return nil
-	}
-	out := make([]itemDetail, 0, len(items))
-	for _, it := range items {
-		name := strings.TrimSpace(it.Name)
-		if name == "" {
-			continue
-		}
-		out = append(out, itemDetail{
-			ID:       it.ID,
-			Price:    it.Price,
-			Quantity: it.Quantity,
-			Name:     name,
-		})
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// mapActions translates Midtrans' "actions" array into unified payment actions.
-// The v2 QR code is dropped when a v1 code is already present, since both point
-// at the same QR payload.
-func mapActions(actions []action) []provider.PaymentAction {
-	var out []provider.PaymentAction
-	qrAdded := false
-	for _, a := range actions {
-		url := strings.TrimSpace(a.URL)
-		if url == "" {
-			continue
-		}
-		switch a.Name {
-		case "generate-qr-code":
-			out = append(out, provider.PaymentAction{
-				Type: provider.ActionURL, Value: url, Description: "QR code image",
-			})
-			qrAdded = true
-		case "generate-qr-code-v2":
-			if qrAdded {
-				continue
-			}
-			out = append(out, provider.PaymentAction{
-				Type: provider.ActionURL, Value: url, Description: "QR code image",
-			})
-			qrAdded = true
-		case "deeplink-redirect":
-			out = append(out, provider.PaymentAction{
-				Type: provider.ActionDeeplink, Value: url, Description: "Open the payment app",
-			})
-		case "redirect-url", "redirect":
-			out = append(out, provider.PaymentAction{
-				Type: provider.ActionURL, Value: url, Description: "Payment page",
-			})
-		}
-	}
-	return out
-}
-
-// qrURL returns the first QR image URL in an actions array.
-func qrURL(actions []action) string {
-	for _, a := range actions {
-		if (a.Name == "generate-qr-code" || a.Name == "generate-qr-code-v2") && strings.TrimSpace(a.URL) != "" {
-			return strings.TrimSpace(a.URL)
-		}
-	}
-	return ""
-}
-
-// paymentCode extracts the human-facing payment identifier for a response: a VA
-// number, a Mandiri bill key, an over-the-counter code or the QR image URL.
-func paymentCode(out *transactionResponse) string {
-	switch {
-	case len(out.VANumbers) > 0:
-		return strings.TrimSpace(out.VANumbers[0].VANumber)
-	case strings.TrimSpace(out.PermataVANumber) != "":
-		return strings.TrimSpace(out.PermataVANumber)
-	case strings.TrimSpace(out.BillKey) != "":
-		return strings.TrimSpace(out.BillKey)
-	case strings.TrimSpace(out.PaymentCode) != "":
-		return strings.TrimSpace(out.PaymentCode)
-	default:
-		return qrURL(out.Actions)
-	}
-}
-
-// eventType builds a descriptive event name from the Midtrans payment type and
-// transaction status, e.g. "qris.settlement" or "bank_transfer.expire".
-func eventType(paymentType, status string) string {
-	pt := strings.TrimSpace(paymentType)
-	st := strings.TrimSpace(status)
-	switch {
-	case pt == "" && st == "":
-		return ""
-	case pt == "":
-		return st
-	case st == "":
-		return pt
-	default:
-		return pt + "." + st
-	}
-}
-
-// firstNonEmpty returns the first argument that is not blank.
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
-}
-
-// truncate bounds an error message taken from a raw gateway response.
-func truncate(s string) string {
-	const max = 512
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "…"
 }
