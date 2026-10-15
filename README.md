@@ -99,7 +99,8 @@ PJP → webhook engine (receiver) → provider engine (parse + verify)
 ├── migrations/             # SQL migrations (applied by `openpay migrate`)
 └── pkg/provider/           # PUBLIC contract every provider implements
     ├── mock/               # reference provider (in-memory gateway)
-    ├── midtrans/           # real adapter: Midtrans BI-SNAP API
+    ├── midtrans/           # real adapter: Midtrans legacy Core API (/v2/charge)
+    ├── midtrans-snap/      # real adapter: Midtrans BI-SNAP Core API
     ├── winpay/             # real adapter: Winpay SNAP API
     ├── xendit/             # real adapter: Xendit Payments API v3
     └── doku/               # real adapter: DOKU SNAP API
@@ -375,12 +376,61 @@ OPENPAY_PROVIDER_WINPAY_CALLBACK_URL=https://openpay.example/webhooks/winpay
 Point Winpay's merchant callback at `POST /webhooks/winpay`. Leave
 `PUBLIC_KEY` empty to skip signature verification (development only).
 
-### A real-world example: Midtrans
+### A real-world example: Midtrans (legacy Core API)
 
-`pkg/provider/midtrans` is a full adapter for [Midtrans](https://docs.midtrans.com/reference/core-api-snap-open-api-overview)
+`pkg/provider/midtrans` is a full adapter for [Midtrans'](https://docs.midtrans.com/reference/core-api-overview)
+**legacy Core API**, the REST product built around `POST /v2/charge` and
+addressed by `order_id`. It charges a specific instrument directly rather than
+hosting a checkout page, and is distinct from both the hosted Snap product and
+the BI-SNAP API below. It supports:
+
+- **Virtual Account** — bank transfer for PERMATA, BCA, BNI, BRI, CIMB, DANAMON,
+  BSI, SEABANK and SAQU, plus **Mandiri Bill Payment** (`echannel`, channel code
+  `MANDIRI`) returned as a biller code + bill key.
+- **QRIS** — dynamic merchant-presented QR (`channel` `QRIS`).
+- **eWallet** — GoPay (`GOPAY`) and ShopeePay (`SHOPEEPAY`), returned as
+  deeplink/redirect actions.
+- **Retail outlet** — Indomaret (`INDOMARET`) and Alfamart (`ALFAMART`).
+
+It demonstrates the parts a real Core API integration needs:
+
+- **Basic Auth** — `Authorization: Basic base64("<server_key>:")`: the server key
+  as the username with an empty password.
+- **Callback authentication** — Midtrans signs notifications with
+  `SHA512(order_id + status_code + gross_amount + server_key)`; the adapter
+  recomputes the digest in constant time and rejects callbacks when `server_key`
+  is not configured.
+- **Status mapping** — `capture`/`settlement` (paid), `pending`/`authorize`
+  (pending), `deny`/`failure` (failed), `cancel`, `expire` and the refund family
+  are normalized onto the unified statuses, accounting for `fraud_status`.
+- **No correlation cache** — the Core API status/cancel/expire endpoints are
+  addressed by the `order_id` (the merchant `reference_id`), so Inquiry and
+  Cancel resolve from the reference alone.
+- **Ambiguous outcome handling** — Midtrans reports business errors with HTTP 200
+  and a non-2xx `status_code` (for example `406` for a duplicate order id), so
+  the adapter inspects the body `status_code` rather than the transport status.
+
+Enable it with:
+
+```bash
+# .env
+OPENPAY_PROVIDERS=mock,midtrans
+OPENPAY_PROVIDER_MIDTRANS_SERVER_KEY=SB-Mid-server-xxxxxxxxxxxxxxxx
+OPENPAY_PROVIDER_MIDTRANS_BASE_URL=https://api.sandbox.midtrans.com
+```
+
+Point Midtrans' notification URL at `POST /webhooks/midtrans`. Per-payment
+`metadata` can carry `va_number` (VA only), `return_url` (e-wallet only) and
+`qris_acquirer` (QRIS acquirer override for one payment). Use
+`https://api.midtrans.com` as `BASE_URL` in production.
+
+### A real-world example: Midtrans (BI-SNAP Core API)
+
+`pkg/provider/midtrans-snap` is a full adapter for [Midtrans](https://docs.midtrans.com/reference/core-api-snap-open-api-overview)
 built on Midtrans' **BI-SNAP Core API** (Bank Indonesia's *Standar Nasional Open
 API Pembayaran*), which charges a specific instrument directly rather than
-hosting a checkout page. It supports:
+hosting a checkout page. It is registered as `midtrans-snap` so it can coexist
+with the legacy Core API adapter above. It supports:
 
 - **Virtual Account** — bank transfer for PERMATA, BCA, MANDIRI, CIMB, BNI, BRI,
   DANAMON, BSI, SEABANK and SAQU (channel codes are the bank names).
@@ -410,19 +460,19 @@ Enable it with:
 
 ```bash
 # .env
-OPENPAY_PROVIDERS=mock,midtrans
-OPENPAY_PROVIDER_MIDTRANS_CLIENT_ID=<client id>
-OPENPAY_PROVIDER_MIDTRANS_CLIENT_SECRET=<client secret>
-OPENPAY_PROVIDER_MIDTRANS_PRIVATE_KEY=<PEM or base64 DER>
-OPENPAY_PROVIDER_MIDTRANS_PUBLIC_KEY=<Midtrans public key>   # for callback verification
-OPENPAY_PROVIDER_MIDTRANS_PARTNER_ID=<X-PARTNER-ID>
-OPENPAY_PROVIDER_MIDTRANS_MERCHANT_ID=<merchant id>          # VA; default QRIS merchant id
-OPENPAY_PROVIDER_MIDTRANS_PARTNER_SERVICE_ID=<8-char BIN>    # VA only
-OPENPAY_PROVIDER_MIDTRANS_BASE_URL=https://merchants.sbx.midtrans.com
+OPENPAY_PROVIDERS=mock,midtrans-snap
+OPENPAY_PROVIDER_MIDTRANS_SNAP_CLIENT_ID=<client id>
+OPENPAY_PROVIDER_MIDTRANS_SNAP_CLIENT_SECRET=<client secret>
+OPENPAY_PROVIDER_MIDTRANS_SNAP_PRIVATE_KEY=<PEM or base64 DER>
+OPENPAY_PROVIDER_MIDTRANS_SNAP_PUBLIC_KEY=<Midtrans public key>   # for callback verification
+OPENPAY_PROVIDER_MIDTRANS_SNAP_PARTNER_ID=<X-PARTNER-ID>
+OPENPAY_PROVIDER_MIDTRANS_SNAP_MERCHANT_ID=<merchant id>          # VA; default QRIS merchant id
+OPENPAY_PROVIDER_MIDTRANS_SNAP_PARTNER_SERVICE_ID=<8-char BIN>    # VA only
+OPENPAY_PROVIDER_MIDTRANS_SNAP_BASE_URL=https://merchants.sbx.midtrans.com
 ```
 
-Point Midtrans' notification URL at `POST /webhooks/midtrans`. Two values are
-passed per payment through `metadata`:
+Point Midtrans' notification URL at `POST /webhooks/midtrans-snap`. Two values
+are passed per payment through `metadata`:
 
 - `return_url` — e-wallet only: the browser URL the payer returns to after
   paying (Midtrans `urlParams` `PAY_RETURN`). The dashboard `PAY_RETURN` url is
@@ -548,8 +598,9 @@ Each merchant carries a routing configuration (stored as JSONB):
 {
   "strategy": "priority",
   "providers": [
-    {"name": "midtrans", "priority": 1, "enabled": true},
-    {"name": "xendit",   "priority": 2, "enabled": true}
+    {"name": "midtrans",      "priority": 1, "enabled": true},
+    {"name": "midtrans-snap", "priority": 2, "enabled": true},
+    {"name": "xendit",        "priority": 3, "enabled": true}
   ]
 }
 ```
@@ -662,11 +713,19 @@ The Winpay adapter has its own suite (`pkg/provider/winpay`) that runs against a
 stub SNAP server which validates the RSA signature on every outgoing request, so
 the mapping, signing and callback-parsing logic are exercised end to end.
 
-The Midtrans adapter has an equivalent suite (`pkg/provider/midtrans`) against a
-stub BI-SNAP server that verifies the RSA get-token signature and the
+The Midtrans **BI-SNAP** adapter has a suite (`pkg/provider/midtrans-snap`)
+against a stub SNAP server that verifies the RSA get-token signature and the
 HMAC-SHA512 transaction signatures on every request and replays documented
 response shapes, covering create/inquiry/cancel for VA/QRIS/e-wallet, token
 caching, the RSA notification signature and the status mapping.
+
+The Midtrans **legacy Core API** adapter has its own suite
+(`pkg/provider/midtrans`) against a stub `POST /v2/charge` server that checks the
+Basic Auth header on every request and replays documented response shapes,
+covering create/inquiry/cancel for VA (including Mandiri `echannel`)/QRIS/
+e-wallet/retail outlet, the `SHA512(order_id + status_code + gross_amount +
+server_key)` callback signature, status-code-based error classification and the
+status mapping.
 
 The Xendit adapter has a suite (`pkg/provider/xendit`) against a stub Payments
 API server that checks Basic Auth and the `api-version` header on every request
@@ -683,8 +742,9 @@ outbound dispatcher with retries, PostgreSQL persistence, migrations, and tests.
 Also implemented: a complete **Winpay (SNAP API)** adapter as a worked example of
 a real gateway integration (VA, QRIS, eWallet).
 
-Also implemented: a complete **Midtrans (BI-SNAP Core API)** adapter (VA, QRIS,
-eWallet) with token and callback signature verification.
+Also implemented: two **Midtrans** adapters — the **legacy Core API**
+(`POST /v2/charge`: VA, QRIS, eWallet, retail outlet) and the **BI-SNAP Core
+API** (VA, QRIS, eWallet) — each with its own callback signature verification.
 
 Also implemented: a complete **Xendit (Payments API v3)** adapter (VA, QRIS,
 eWallet, retail outlet, pay later, card) with callback token verification.
@@ -694,8 +754,9 @@ Deliberately left for later:
 - further concrete gateway adapters (Duitku, OY!, ...) —
   the interface is ready, see [Adding a provider](#adding-a-provider);
 - persisting the gateway-specific correlation identifiers the Winpay, DOKU and
-  Midtrans adapters currently cache in memory (contractId, VA number, original
-  reference numbers, `X-EXTERNAL-ID`);
+  Midtrans **BI-SNAP** adapters currently cache in memory (contractId, VA number,
+  original reference numbers, `X-EXTERNAL-ID`); the legacy Midtrans Core API
+  adapter needs no cache because it addresses by `order_id`;
 - refunds as a first-class operation (the pattern is the optional
   `SignatureVerifier`-style extension interface);
 - an admin API for merchants and routing configuration (today: `openpay seed`);

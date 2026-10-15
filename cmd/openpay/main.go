@@ -39,6 +39,7 @@ import (
 	// package for side effects is all that is required to make them available.
 	_ "github.com/moherik/openpay.id/pkg/provider/doku"
 	_ "github.com/moherik/openpay.id/pkg/provider/midtrans"
+	_ "github.com/moherik/openpay.id/pkg/provider/midtrans-snap"
 	_ "github.com/moherik/openpay.id/pkg/provider/mock"
 	_ "github.com/moherik/openpay.id/pkg/provider/winpay"
 	_ "github.com/moherik/openpay.id/pkg/provider/xendit"

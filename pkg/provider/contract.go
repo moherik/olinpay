@@ -12,8 +12,9 @@ import (
 // Implementations MUST be safe for concurrent use.
 type Provider interface {
 	// Name returns the stable, unique identifier of the provider as used in
-	// configuration, routing and callback URLs (e.g. "mock", "midtrans").
-	// It must be lowercase and URL-safe.
+	// configuration, routing and callback URLs (e.g. "mock", "midtrans",
+	// "midtrans-snap"). It must be lowercase and URL-safe; hyphens are allowed
+	// so closely related products can register under distinct names.
 	Name() string
 
 	// Capabilities describes what this provider can do. The core engine uses

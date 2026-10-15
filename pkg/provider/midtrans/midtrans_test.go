@@ -2,18 +2,12 @@ package midtrans
 
 import (
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,28 +16,19 @@ import (
 	"github.com/moherik/openpay.id/pkg/provider"
 )
 
-const (
-	testClientID     = "MCH-MID-TEST"
-	testClientSecret = "SK-MID-TEST-SECRET"
-	testPartnerID    = "PARTNER-MID-TEST"
-	testMerchantID   = "G123456789"
-	testPartnerSvcID = "   19008"
-	testToken        = "midtrans-test-token-abc123"
-)
+const testServerKey = "SB-Mid-server-TESTKEY"
 
-// testGateway stands in for Midtrans' BI-SNAP API. On the get-token endpoint it
-// verifies the RSA-SHA256 signature with the merchant public key; on every
-// transactional endpoint it verifies the bearer token and the HMAC-SHA512
-// signature. Canned responses are keyed by "METHOD /path".
+// testGateway stands in for Midtrans' legacy Core API. It enforces the Basic
+// Auth header on every request and serves canned responses keyed by
+// "METHOD /path".
 type testGateway struct {
 	t          *testing.T
 	server     *httptest.Server
 	mu         sync.Mutex
 	responses  map[string]string
+	statuses   map[string]int
 	lastBody   map[string][]byte
 	lastHeader map[string]http.Header
-	tokenCalls int
-	pubKey     *rsa.PublicKey
 }
 
 func newTestGateway(t *testing.T) *testGateway {
@@ -51,6 +36,7 @@ func newTestGateway(t *testing.T) *testGateway {
 	g := &testGateway{
 		t:          t,
 		responses:  make(map[string]string),
+		statuses:   make(map[string]int),
 		lastBody:   make(map[string][]byte),
 		lastHeader: make(map[string]http.Header),
 	}
@@ -59,10 +45,17 @@ func newTestGateway(t *testing.T) *testGateway {
 	return g
 }
 
+// respond registers a 200 response for method+path.
 func (g *testGateway) respond(method, path, body string) {
+	g.respondStatus(method, path, http.StatusOK, body)
+}
+
+// respondStatus registers a response with an explicit HTTP status.
+func (g *testGateway) respondStatus(method, path string, status int, body string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.responses[method+" "+path] = body
+	g.statuses[method+" "+path] = status
 }
 
 func (g *testGateway) serve(w http.ResponseWriter, r *http.Request) {
@@ -72,78 +65,29 @@ func (g *testGateway) serve(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	g.lastBody[key] = body
 	g.lastHeader[key] = r.Header.Clone()
-	if r.URL.Path == pathAccessToken {
-		g.tokenCalls++
-	}
 	resp, ok := g.responses[key]
+	status := g.statuses[key]
 	g.mu.Unlock()
 
-	if r.URL.Path == pathAccessToken {
-		if !g.verifyTokenSignature(r) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"responseCode":"4017300","responseMessage":"Unauthorized. Signature"}`))
-			return
-		}
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(testServerKey+":"))
+	if r.Header.Get(headerAuthorization) != wantAuth {
 		w.Header().Set("Content-Type", "application/json")
-		// expiresIn is deliberately a JSON string, matching Midtrans.
-		_, _ = w.Write([]byte(`{"responseCode":"2007300","responseMessage":"Successful","accessToken":"` +
-			testToken + `","tokenType":"Bearer","expiresIn":"900"}`))
-		return
-	}
-
-	if r.Header.Get("Authorization") != "Bearer "+testToken {
-		http.Error(w, `{"responseCode":"4015400","responseMessage":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	if !g.verifySignature(r, body) {
-		g.t.Errorf("gateway: bad HMAC signature on %s", key)
-		http.Error(w, `{"responseCode":"4015400","responseMessage":"bad signature"}`, http.StatusUnauthorized)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"status_code":"401","status_message":"unauthorized"}`))
 		return
 	}
 	if !ok {
-		http.Error(w, `{"responseCode":"4045400","responseMessage":"not found"}`, http.StatusNotFound)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"status_code":"404","status_message":"not found"}`))
 		return
 	}
+	if status == 0 {
+		status = http.StatusOK
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_, _ = w.Write([]byte(resp))
-}
-
-// verifyTokenSignature checks the RSA-SHA256 signature over "clientID|timestamp".
-func (g *testGateway) verifyTokenSignature(r *http.Request) bool {
-	g.mu.Lock()
-	pub := g.pubKey
-	g.mu.Unlock()
-	if pub == nil {
-		return false
-	}
-	clientKey := r.Header.Get(headerClientID)
-	ts := r.Header.Get(headerTimestamp)
-	sig := r.Header.Get(headerSignature)
-	if clientKey == "" || ts == "" || sig == "" {
-		return false
-	}
-	raw, err := base64.StdEncoding.DecodeString(sig)
-	if err != nil {
-		return false
-	}
-	digest := sha256.Sum256([]byte(tokenStringToSign(clientKey, ts)))
-	return rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], raw) == nil
-}
-
-// verifySignature recomputes the HMAC-SHA512 over the exact received body.
-func (g *testGateway) verifySignature(r *http.Request, body []byte) bool {
-	ts := r.Header.Get(headerTimestamp)
-	sig := r.Header.Get(headerSignature)
-	if ts == "" || sig == "" {
-		return false
-	}
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	want, err := signRequest(testClientSecret, r.Method, r.URL.Path, token, body, ts)
-	if err != nil {
-		return false
-	}
-	return want == sig
 }
 
 func (g *testGateway) header(t *testing.T, method, path, name string) string {
@@ -172,27 +116,11 @@ func (g *testGateway) body(t *testing.T, method, path string) map[string]any {
 	return out
 }
 
-// newTestProvider builds a Provider wired to the test gateway with a freshly
-// generated RSA key whose public half the gateway uses to verify get-token
-// requests.
 func newTestProvider(t *testing.T, g *testGateway, extra provider.Config) *Provider {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	g.mu.Lock()
-	g.pubKey = &key.PublicKey
-	g.mu.Unlock()
-
 	cfg := provider.Config{
-		"client_id":     testClientID,
-		"client_secret": testClientSecret,
-		"private_key":   encodePrivateKey(key),
-		"partner_id":    testPartnerID,
-		"merchant_id":   testMerchantID,
-		"base_url":      g.server.URL,
-		"channel_id":    "12345",
+		"server_key": testServerKey,
+		"base_url":   g.server.URL,
 	}
 	for k, v := range extra {
 		cfg[k] = v
@@ -204,81 +132,42 @@ func newTestProvider(t *testing.T, g *testGateway, extra provider.Config) *Provi
 	return p
 }
 
-func encodePrivateKey(key *rsa.PrivateKey) string {
-	return base64.StdEncoding.EncodeToString(x509.MarshalPKCS1PrivateKey(key))
-}
-
-func encodePublicKey(pub *rsa.PublicKey) (string, error) {
-	der, err := x509.MarshalPKIXPublicKey(pub)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(der), nil
-}
-
 // --- config -----------------------------------------------------------------
 
 func TestNewRequiresConfig(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
+	if _, err := New(provider.Config{}); err == nil {
+		t.Error("New without server_key should fail")
 	}
-	base := provider.Config{
-		"client_id":     testClientID,
-		"client_secret": testClientSecret,
-		"private_key":   encodePrivateKey(key),
-	}
-	for _, missing := range []string{"client_id", "client_secret", "private_key"} {
-		cfg := provider.Config{}
-		for k, v := range base {
-			cfg[k] = v
-		}
-		delete(cfg, missing)
-		if _, err := New(cfg); err == nil {
-			t.Errorf("New without %q should fail", missing)
-		}
-	}
-
-	if _, err := New(provider.Config{"client_id": "a", "client_secret": "b", "private_key": "not-a-key"}); err == nil {
-		t.Error("expected an error for an invalid private key")
-	}
-	if _, err := New(provider.Config{
-		"client_id": "a", "client_secret": "b", "private_key": encodePrivateKey(key), "timeout": "nope",
-	}); err == nil {
+	if _, err := New(provider.Config{"server_key": "s", "timeout": "nope"}); err == nil {
 		t.Error("expected an error for an invalid timeout")
 	}
+	if _, err := New(provider.Config{"server_key": "s", "default_expiry": "nope"}); err == nil {
+		t.Error("expected an error for an invalid default_expiry")
+	}
 
-	p, err := New(base)
+	p, err := New(provider.Config{"server_key": "s"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if p.baseURL != defaultBaseURL {
 		t.Errorf("base url = %q, want %q", p.baseURL, defaultBaseURL)
 	}
-	if p.partnerID != testClientID {
-		t.Errorf("partner_id should default to client_id, got %q", p.partnerID)
-	}
-	if p.publicKey != nil {
-		t.Error("public_key should be nil when not configured")
+	if p.qrisAcquirer != qrisDefaultAcquirer {
+		t.Errorf("qris acquirer = %q, want %q", p.qrisAcquirer, qrisDefaultAcquirer)
 	}
 }
 
 func TestRegistryFactory(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	cfg := provider.Config{
-		"client_id":     testClientID,
-		"client_secret": testClientSecret,
-		"private_key":   encodePrivateKey(key),
-	}
+	cfg := provider.Config{"server_key": "s"}
 	built, err := provider.Default().Build(Name, cfg)
 	if err != nil {
 		t.Fatalf("Build(%q): %v", Name, err)
 	}
 	if built.Name() != Name {
 		t.Errorf("name = %q, want %q", built.Name(), Name)
+	}
+	if Name != "midtrans" {
+		t.Errorf("legacy Core API Name = %q, want %q", Name, "midtrans")
 	}
 	if _, err := provider.NewRegistry().Build(Name, cfg); err != nil {
 		t.Fatalf("Build on a fresh registry: %v", err)
@@ -290,17 +179,20 @@ func TestCapabilities(t *testing.T) {
 	p := newTestProvider(t, g, nil)
 	caps := p.Capabilities()
 
-	for _, m := range []provider.Method{provider.MethodVirtualAccount, provider.MethodQRIS, provider.MethodEWallet} {
+	for _, m := range []provider.Method{
+		provider.MethodVirtualAccount, provider.MethodQRIS,
+		provider.MethodEWallet, provider.MethodRetailOutlet,
+	} {
 		if !caps.SupportsMethod(m) {
 			t.Errorf("expected %q to be supported", m)
 		}
 	}
-	for _, m := range []provider.Method{provider.MethodCard, provider.MethodRetailOutlet, provider.MethodPaylater, provider.MethodDirectDebit} {
+	for _, m := range []provider.Method{provider.MethodCard, provider.MethodPaylater, provider.MethodDirectDebit} {
 		if caps.SupportsMethod(m) {
-			t.Errorf("BI-SNAP does not support %q, but it was advertised", m)
+			t.Errorf("Core API adapter does not support %q, but it was advertised", m)
 		}
 	}
-	for _, ch := range []string{"BCA", "GOPAY", "QRIS", "bca", "  mandiri  "} {
+	for _, ch := range []string{"BCA", "MANDIRI", "QRIS", "GOPAY", "INDOMARET", "alfamart"} {
 		if !caps.SupportsChannel(ch) {
 			t.Errorf("expected channel %q to be advertised", ch)
 		}
@@ -315,20 +207,16 @@ func TestCapabilities(t *testing.T) {
 
 // --- CreatePayment ----------------------------------------------------------
 
-func TestCreateVirtualAccount(t *testing.T) {
+func TestCreateBankTransferVA(t *testing.T) {
 	g := newTestGateway(t)
-	g.respond("POST", pathVACreate, `{
-		"responseCode":"2002700","responseMessage":"Successful",
-		"virtualAccountData":{
-			"partnerServiceId":"   19008","customerNo":"8527389546786863",
-			"virtualAccountNo":"   190088527389546786863",
-			"virtualAccountName":"Budi Utomo","trxId":"INV-0001",
-			"totalAmount":{"value":"25000.00","currency":"IDR"},
-			"expiredDate":"2026-10-15T10:00:00+07:00",
-			"additionalInfo":{"merchantId":"G123456789","bank":"bca"}
-		}
+	g.respond("POST", pathCharge, `{
+		"status_code":"201","status_message":"OK",
+		"transaction_id":"trx-1","order_id":"INV-0001","gross_amount":"25000.00",
+		"payment_type":"bank_transfer","transaction_status":"pending",
+		"va_numbers":[{"bank":"bca","va_number":"12345678"}],
+		"expiry_time":"2026-10-16 10:00:00"
 	}`)
-	p := newTestProvider(t, g, provider.Config{"partner_service_id": testPartnerSvcID})
+	p := newTestProvider(t, g, nil)
 
 	resp, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
 		ReferenceID: "INV-0001",
@@ -337,22 +225,20 @@ func TestCreateVirtualAccount(t *testing.T) {
 		Method:      provider.MethodVirtualAccount,
 		Channel:     "bca",
 		Customer:    provider.Customer{Name: "Budi Utomo", Email: "budi@example.com"},
+		Items:       []provider.Item{{Name: "Widget", Price: 25000, Quantity: 1}},
 		Expiry:      time.Hour,
 	})
 	if err != nil {
 		t.Fatalf("CreatePayment: %v", err)
 	}
-	if resp.PaymentCode != "190088527389546786863" {
+	if resp.PaymentCode != "12345678" {
 		t.Errorf("PaymentCode = %q", resp.PaymentCode)
 	}
-	if resp.ProviderReference != "190088527389546786863" {
-		t.Errorf("ProviderReference = %q", resp.ProviderReference)
+	if resp.ProviderReference != "trx-1" || resp.ReferenceID != "INV-0001" {
+		t.Errorf("references = %q/%q", resp.ProviderReference, resp.ReferenceID)
 	}
-	if resp.Status != provider.StatusPending {
-		t.Errorf("Status = %q, want pending", resp.Status)
-	}
-	if resp.Amount != 25000 {
-		t.Errorf("Amount = %d, want 25000", resp.Amount)
+	if resp.Status != provider.StatusPending || resp.Amount != 25000 {
+		t.Errorf("status/amount = %q/%d", resp.Status, resp.Amount)
 	}
 	if resp.ExpiresAt == nil {
 		t.Error("expected an expiry")
@@ -361,97 +247,97 @@ func TestCreateVirtualAccount(t *testing.T) {
 		t.Errorf("Actions = %+v, want one display action", resp.Actions)
 	}
 
-	body := g.body(t, http.MethodPost, pathVACreate)
-	if body["partnerServiceId"] != testPartnerSvcID {
-		t.Errorf("partnerServiceId = %v", body["partnerServiceId"])
+	body := g.body(t, http.MethodPost, pathCharge)
+	if body["payment_type"] != "bank_transfer" {
+		t.Errorf("payment_type = %v", body["payment_type"])
 	}
-	if body["trxId"] != "INV-0001" {
-		t.Errorf("trxId = %v", body["trxId"])
+	bt, _ := body["bank_transfer"].(map[string]any)
+	if bt["bank"] != "bca" {
+		t.Errorf("bank_transfer.bank = %v", bt["bank"])
 	}
-	total, _ := body["totalAmount"].(map[string]any)
-	if total["value"] != "25000.00" || total["currency"] != "IDR" {
-		t.Errorf("totalAmount = %v", total)
+	td, _ := body["transaction_details"].(map[string]any)
+	if td["order_id"] != "INV-0001" || td["gross_amount"] != float64(25000) {
+		t.Errorf("transaction_details = %v", td)
 	}
-	add, _ := body["additionalInfo"].(map[string]any)
-	if add["bank"] != "bca" {
-		t.Errorf("additionalInfo.bank = %v, want bca", add["bank"])
+	cd, _ := body["customer_details"].(map[string]any)
+	if cd["first_name"] != "Budi" || cd["last_name"] != "Utomo" || cd["email"] != "budi@example.com" {
+		t.Errorf("customer_details = %v", cd)
 	}
-
-	if got := g.header(t, http.MethodPost, pathVACreate, headerPartnerID); got != testPartnerID {
-		t.Errorf("X-PARTNER-ID = %q", got)
+	if _, ok := body["custom_expiry"]; !ok {
+		t.Error("expected custom_expiry")
 	}
-	if got := g.header(t, http.MethodPost, pathVACreate, headerExternalID); got != "INV-0001" {
-		t.Errorf("X-EXTERNAL-ID = %q, want the trxId %q", got, "INV-0001")
-	}
-	if got := g.header(t, http.MethodPost, pathVACreate, headerClientID); got != testClientID {
-		t.Errorf("X-CLIENT-KEY = %q", got)
-	}
-	if got := g.header(t, http.MethodPost, pathVACreate, headerChannelID); got != "12345" {
-		t.Errorf("CHANNEL-ID = %q", got)
+	if got := g.header(t, http.MethodPost, pathCharge, headerAuthorization); !strings.HasPrefix(got, "Basic ") {
+		t.Errorf("Authorization = %q", got)
 	}
 }
 
-func TestCreateVirtualAccountMandiriLabels(t *testing.T) {
+func TestCreatePermataVA(t *testing.T) {
 	g := newTestGateway(t)
-	g.respond("POST", pathVACreate, `{
-		"responseCode":"2002700","responseMessage":"Successful",
-		"virtualAccountData":{"virtualAccountNo":"   190088527389546786863","trxId":"INV-0002"}
+	g.respond("POST", pathCharge, `{
+		"status_code":"201","status_message":"OK",
+		"transaction_id":"trx-1","order_id":"INV-1","gross_amount":"10000.00",
+		"payment_type":"bank_transfer","transaction_status":"pending",
+		"permata_va_number":"8562938472983"
 	}`)
-	p := newTestProvider(t, g, provider.Config{"partner_service_id": testPartnerSvcID})
+	p := newTestProvider(t, g, nil)
 
-	_, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-0002", Amount: 44000, Method: provider.MethodVirtualAccount, Channel: "MANDIRI",
+	resp, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "INV-1", Amount: 10000, Method: provider.MethodVirtualAccount, Channel: "PERMATA",
 	})
 	if err != nil {
 		t.Fatalf("CreatePayment: %v", err)
 	}
-	body := g.body(t, http.MethodPost, pathVACreate)
-	add, _ := body["additionalInfo"].(map[string]any)
-	mandiri, _ := add["mandiri"].(map[string]any)
-	if mandiri["billInfo1"] != "Payment" {
-		t.Errorf("mandiri.billInfo1 = %v", mandiri["billInfo1"])
+	if resp.PaymentCode != "8562938472983" {
+		t.Errorf("PaymentCode = %q", resp.PaymentCode)
 	}
 }
 
-func TestCreateVirtualAccountErrors(t *testing.T) {
+func TestCreateMandiriECHannel(t *testing.T) {
 	g := newTestGateway(t)
+	g.respond("POST", pathCharge, `{
+		"status_code":"201","status_message":"OK",
+		"transaction_id":"trx-1","order_id":"INV-2","gross_amount":"44000.00",
+		"payment_type":"echannel","transaction_status":"pending",
+		"biller_code":"70012","bill_key":"68100249875"
+	}`)
+	p := newTestProvider(t, g, nil)
 
-	// Missing channel.
-	p := newTestProvider(t, g, provider.Config{"partner_service_id": testPartnerSvcID})
-	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodVirtualAccount,
-	}); !errors.Is(err, provider.ErrInvalidRequest) {
-		t.Errorf("expected ErrInvalidRequest for a missing channel, got %v", err)
+	resp, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "INV-2", Amount: 44000, Method: provider.MethodVirtualAccount, Channel: "MANDIRI",
+	})
+	if err != nil {
+		t.Fatalf("CreatePayment: %v", err)
+	}
+	if resp.PaymentCode != "7001268100249875" {
+		t.Errorf("PaymentCode = %q", resp.PaymentCode)
+	}
+	if len(resp.Actions) != 1 || resp.Actions[0].Type != provider.ActionDisplay {
+		t.Errorf("Actions = %+v", resp.Actions)
 	}
 
-	// Unsupported channel.
-	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodVirtualAccount, Channel: "XYZ",
-	}); !errors.Is(err, provider.ErrInvalidRequest) {
-		t.Errorf("expected ErrInvalidRequest for an unknown channel, got %v", err)
+	body := g.body(t, http.MethodPost, pathCharge)
+	if body["payment_type"] != "echannel" {
+		t.Errorf("payment_type = %v", body["payment_type"])
 	}
-
-	// Missing partner_service_id.
-	p2 := newTestProvider(t, g, nil)
-	if _, err := p2.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodVirtualAccount, Channel: "BCA",
-	}); !errors.Is(err, provider.ErrInvalidRequest) {
-		t.Errorf("expected ErrInvalidRequest without partner_service_id, got %v", err)
+	ec, _ := body["echannel"].(map[string]any)
+	if ec["bill_info1"] != "Payment" {
+		t.Errorf("echannel.bill_info1 = %v", ec["bill_info1"])
 	}
 }
 
 func TestCreateQRIS(t *testing.T) {
 	g := newTestGateway(t)
-	g.respond("POST", pathQRISGenerate, `{
-		"responseCode":"2005200","responseMessage":"Successful",
-		"referenceNo":"REF-1","partnerReferenceNo":"INV-1",
-		"qrContent":"00020101021226610014COM.GO-JEK.WWW","qrUrl":"https://api.midtrans.com/v4/qris/qr-code",
-		"additionalInfo":{"acquirer":"gopay"}
+	g.respond("POST", pathCharge, `{
+		"status_code":"201","status_message":"OK",
+		"transaction_id":"trx-1","order_id":"INV-3","gross_amount":"275000.00",
+		"payment_type":"qris","transaction_status":"pending","acquirer":"gopay",
+		"qr_string":"00020101021226610014COM.GO-JEK.WWW",
+		"actions":[{"name":"generate-qr-code","method":"GET","url":"https://api.midtrans.com/v2/qris/INV-3/qr-code"}]
 	}`)
 	p := newTestProvider(t, g, nil)
 
 	resp, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-1", Amount: 275000, Method: provider.MethodQRIS, Channel: "QRIS",
+		ReferenceID: "INV-3", Amount: 275000, Method: provider.MethodQRIS, Channel: "QRIS",
 	})
 	if err != nil {
 		t.Fatalf("CreatePayment: %v", err)
@@ -459,87 +345,126 @@ func TestCreateQRIS(t *testing.T) {
 	if resp.PaymentCode != "00020101021226610014COM.GO-JEK.WWW" {
 		t.Errorf("PaymentCode = %q", resp.PaymentCode)
 	}
-	if resp.Status != provider.StatusPending || resp.Amount != 275000 {
-		t.Errorf("status/amount = %q/%d", resp.Status, resp.Amount)
-	}
-	if len(resp.Actions) != 2 {
-		t.Fatalf("Actions = %+v, want a QR code and a URL", resp.Actions)
-	}
-	if resp.Actions[0].Type != provider.ActionQRCode || resp.Actions[1].Type != provider.ActionURL {
-		t.Errorf("action types = %q, %q", resp.Actions[0].Type, resp.Actions[1].Type)
+	if len(resp.Actions) != 2 || resp.Actions[0].Type != provider.ActionQRCode || resp.Actions[1].Type != provider.ActionURL {
+		t.Errorf("Actions = %+v, want a QR payload and a URL", resp.Actions)
 	}
 
-	body := g.body(t, http.MethodPost, pathQRISGenerate)
-	if body["merchantId"] != testMerchantID {
-		t.Errorf("merchantId = %v", body["merchantId"])
+	body := g.body(t, http.MethodPost, pathCharge)
+	if body["payment_type"] != "qris" {
+		t.Errorf("payment_type = %v", body["payment_type"])
 	}
-	add, _ := body["additionalInfo"].(map[string]any)
-	if add["acquirer"] != "gopay" {
-		t.Errorf("additionalInfo.acquirer = %v, want gopay", add["acquirer"])
+	q, _ := body["qris"].(map[string]any)
+	if q["acquirer"] != "gopay" {
+		t.Errorf("qris.acquirer = %v", q["acquirer"])
 	}
 }
 
 func TestCreateEWallet(t *testing.T) {
 	g := newTestGateway(t)
-	g.respond("POST", pathDebitCreate, `{
-		"responseCode":"2005600","responseMessage":"Successful",
-		"referenceNo":"REF-2","partnerReferenceNo":"INV-2",
-		"webRedirectUrl":"https://merchants.sbx.midtrans.com/web/redirect",
-		"appRedirectUrl":"gopay://pay?tref=abc"
+	g.respond("POST", pathCharge, `{
+		"status_code":"201","status_message":"OK",
+		"transaction_id":"trx-1","order_id":"INV-4","gross_amount":"10000.00",
+		"payment_type":"gopay","transaction_status":"pending",
+		"actions":[{"name":"deeplink-redirect","method":"GET","url":"https://gojek.link/pay/abc"}]
 	}`)
 	p := newTestProvider(t, g, nil)
 
 	resp, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-2",
-		Amount:      10000,
-		Method:      provider.MethodEWallet,
-		Channel:     "GOPAY",
-		Customer:    provider.Customer{Name: "Budi Utomo", Email: "budi@example.com"},
-		Metadata:    map[string]string{"return_url": "https://shop.example/checkout/return"},
+		ReferenceID: "INV-4", Amount: 10000, Method: provider.MethodEWallet, Channel: "GOPAY",
+		Metadata: map[string]string{"return_url": "https://shop.example/return"},
 	})
 	if err != nil {
 		t.Fatalf("CreatePayment: %v", err)
 	}
-	if resp.ProviderReference != "REF-2" || resp.ReferenceID != "INV-2" {
-		t.Errorf("references = %q/%q", resp.ProviderReference, resp.ReferenceID)
-	}
-	if len(resp.Actions) != 2 {
-		t.Fatalf("Actions = %+v, want a deeplink and a URL", resp.Actions)
-	}
-	if resp.Actions[0].Type != provider.ActionDeeplink || resp.Actions[1].Type != provider.ActionURL {
-		t.Errorf("action types = %q, %q", resp.Actions[0].Type, resp.Actions[1].Type)
+	if len(resp.Actions) != 1 || resp.Actions[0].Type != provider.ActionDeeplink {
+		t.Fatalf("Actions = %+v, want a deeplink", resp.Actions)
 	}
 
-	body := g.body(t, http.MethodPost, pathDebitCreate)
-	if body["chargeToken"] != testToken {
-		t.Errorf("chargeToken = %v, want the access token", body["chargeToken"])
+	body := g.body(t, http.MethodPost, pathCharge)
+	if body["payment_type"] != "gopay" {
+		t.Errorf("payment_type = %v", body["payment_type"])
 	}
-	opts, _ := body["payOptionDetails"].([]any)
-	if len(opts) != 1 {
-		t.Fatalf("payOptionDetails = %v", opts)
-	}
-	opt, _ := opts[0].(map[string]any)
-	if opt["payMethod"] != "GOPAY" || opt["payOption"] != "GOPAY" {
-		t.Errorf("payOptionDetails[0] = %v", opt)
-	}
-	params, _ := body["urlParams"].([]any)
-	if len(params) != 1 {
-		t.Fatalf("urlParams = %v", params)
-	}
-	param, _ := params[0].(map[string]any)
-	if param["url"] != "https://shop.example/checkout/return" || param["type"] != "PAY_RETURN" {
-		t.Errorf("urlParams[0] = %v", param)
+	gp, _ := body["gopay"].(map[string]any)
+	if gp["enable_callback"] != true || gp["callback_url"] != "https://shop.example/return" {
+		t.Errorf("gopay = %v", gp)
 	}
 }
 
-func TestCreateUnsupportedMethodAndCurrency(t *testing.T) {
+func TestCreateShopeePay(t *testing.T) {
+	g := newTestGateway(t)
+	g.respond("POST", pathCharge, `{
+		"status_code":"201","status_message":"OK",
+		"transaction_id":"trx-1","order_id":"INV-5","gross_amount":"10000.00",
+		"payment_type":"shopeepay","transaction_status":"pending",
+		"actions":[{"name":"deeplink-redirect","method":"GET","url":"https://shopee.co.id/pay"}]
+	}`)
+	p := newTestProvider(t, g, provider.Config{"shopee_pay_callback_url": "https://shop.example/sp"})
+
+	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "INV-5", Amount: 10000, Method: provider.MethodEWallet, Channel: "SHOPEEPAY",
+	}); err != nil {
+		t.Fatalf("CreatePayment: %v", err)
+	}
+	body := g.body(t, http.MethodPost, pathCharge)
+	sp, _ := body["shopeepay"].(map[string]any)
+	if sp["callback_url"] != "https://shop.example/sp" {
+		t.Errorf("shopeepay.callback_url = %v", sp["callback_url"])
+	}
+}
+
+func TestCreateRetailOutlet(t *testing.T) {
+	g := newTestGateway(t)
+	g.respond("POST", pathCharge, `{
+		"status_code":"201","status_message":"OK",
+		"transaction_id":"trx-1","order_id":"INV-6","gross_amount":"15000.00",
+		"payment_type":"cstore","transaction_status":"pending",
+		"store":"indomaret","payment_code":"12345678"
+	}`)
+	p := newTestProvider(t, g, nil)
+
+	resp, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "INV-6", Amount: 15000, Method: provider.MethodRetailOutlet, Channel: "INDOMARET",
+	})
+	if err != nil {
+		t.Fatalf("CreatePayment: %v", err)
+	}
+	if resp.PaymentCode != "12345678" {
+		t.Errorf("PaymentCode = %q", resp.PaymentCode)
+	}
+	if len(resp.Actions) != 1 || resp.Actions[0].Type != provider.ActionDisplay {
+		t.Errorf("Actions = %+v", resp.Actions)
+	}
+
+	body := g.body(t, http.MethodPost, pathCharge)
+	cs, _ := body["cstore"].(map[string]any)
+	if cs["store"] != "indomaret" {
+		t.Errorf("cstore.store = %v", cs["store"])
+	}
+}
+
+func TestCreateErrors(t *testing.T) {
 	g := newTestGateway(t)
 	p := newTestProvider(t, g, nil)
 
 	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodCard,
-	}); !errors.Is(err, provider.ErrUnsupportedOperation) {
-		t.Errorf("expected ErrUnsupportedOperation for a card, got %v", err)
+		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodVirtualAccount,
+	}); !errors.Is(err, provider.ErrInvalidRequest) {
+		t.Errorf("expected ErrInvalidRequest for a missing VA channel, got %v", err)
+	}
+	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodVirtualAccount, Channel: "XYZ",
+	}); !errors.Is(err, provider.ErrInvalidRequest) {
+		t.Errorf("expected ErrInvalidRequest for an unknown VA channel, got %v", err)
+	}
+	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodEWallet,
+	}); !errors.Is(err, provider.ErrInvalidRequest) {
+		t.Errorf("expected ErrInvalidRequest for a missing wallet channel, got %v", err)
+	}
+	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodRetailOutlet, Channel: "NOPE",
+	}); !errors.Is(err, provider.ErrInvalidRequest) {
+		t.Errorf("expected ErrInvalidRequest for an unknown retail channel, got %v", err)
 	}
 	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
 		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodQRIS, Currency: "USD",
@@ -551,11 +476,17 @@ func TestCreateUnsupportedMethodAndCurrency(t *testing.T) {
 	}); !errors.Is(err, provider.ErrInvalidRequest) {
 		t.Errorf("expected ErrInvalidRequest for a missing reference, got %v", err)
 	}
+	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodCard,
+	}); !errors.Is(err, provider.ErrUnsupportedOperation) {
+		t.Errorf("expected ErrUnsupportedOperation for a card, got %v", err)
+	}
 }
 
 func TestCreateSurfacesGatewayError(t *testing.T) {
 	g := newTestGateway(t)
-	g.respond("POST", pathQRISGenerate, `{"responseCode":"4095201","responseMessage":"Transaction has previously been processed"}`)
+	// Midtrans reports a duplicate order_id with HTTP 200 and status_code 406.
+	g.respond("POST", pathCharge, `{"status_code":"406","status_message":"Duplicate order id"}`)
 	p := newTestProvider(t, g, nil)
 
 	_, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
@@ -565,144 +496,79 @@ func TestCreateSurfacesGatewayError(t *testing.T) {
 		t.Fatalf("expected ErrDuplicateReference, got %v", err)
 	}
 	var perr *provider.Error
-	if !errors.As(err, &perr) || perr.Code != "4095201" {
+	if !errors.As(err, &perr) || perr.Code != "406" {
 		t.Errorf("expected the gateway code to be preserved, got %#v", err)
+	}
+}
+
+func TestCreateSurfacesHTTPError(t *testing.T) {
+	g := newTestGateway(t)
+	g.respondStatus("POST", pathCharge, http.StatusInternalServerError, `{"status_code":"500","status_message":"boom"}`)
+	p := newTestProvider(t, g, nil)
+
+	_, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "INV-1", Amount: 1000, Method: provider.MethodQRIS,
+	})
+	if !errors.Is(err, provider.ErrGateway) {
+		t.Fatalf("expected ErrGateway, got %v", err)
 	}
 }
 
 // --- Inquiry ----------------------------------------------------------------
 
-func TestInquiryVA(t *testing.T) {
+func TestInquiry(t *testing.T) {
 	g := newTestGateway(t)
-	g.respond("POST", pathVACreate, `{
-		"responseCode":"2002700","responseMessage":"Successful",
-		"virtualAccountData":{"virtualAccountNo":"   19008000000000000123","trxId":"INV-1"}
+	g.respond("GET", "/v2/INV-1/status", `{
+		"status_code":"200","status_message":"OK",
+		"transaction_id":"trx-1","order_id":"INV-1","gross_amount":"10000.00",
+		"payment_type":"bank_transfer","transaction_status":"settlement",
+		"settlement_time":"2026-10-14 10:00:00",
+		"va_numbers":[{"bank":"bca","va_number":"12345678"}]
 	}`)
-	g.respond("POST", pathVAStatus, `{
-		"responseCode":"2002600","responseMessage":"Successful",
-		"virtualAccountData":{
-			"paymentFlagStatus":"00",
-			"paymentFlagReason":{"english":"Success","indonesia":"Sukses"},
-			"partnerServiceId":"   19008","customerNo":"000000000000000123",
-			"virtualAccountNo":"   19008000000000000123",
-			"inquiryRequestId":"INV-1","paidAmount":{"value":"10000.00","currency":"IDR"},
-			"totalAmount":{"value":"10000.00","currency":"IDR"},
-			"transactionDate":"2026-10-14T10:00:00+07:00"
-		}
-	}`)
-	p := newTestProvider(t, g, provider.Config{"partner_service_id": testPartnerSvcID})
-
-	seedVA(t, p)
+	p := newTestProvider(t, g, nil)
 
 	resp, err := p.Inquiry(context.Background(), &provider.InquiryRequest{ReferenceID: "INV-1"})
 	if err != nil {
 		t.Fatalf("Inquiry: %v", err)
 	}
-	if resp.Status != provider.StatusPaid {
-		t.Errorf("Status = %q, want paid", resp.Status)
+	if resp.Status != provider.StatusPaid || resp.Amount != 10000 {
+		t.Errorf("status/amount = %q/%d", resp.Status, resp.Amount)
 	}
-	if resp.Amount != 10000 {
-		t.Errorf("Amount = %d, want 10000", resp.Amount)
+	if resp.ProviderReference != "trx-1" || resp.PaymentCode != "12345678" {
+		t.Errorf("providerRef/code = %q/%q", resp.ProviderReference, resp.PaymentCode)
 	}
 	if resp.PaidAt == nil {
 		t.Error("expected paid_at")
 	}
-
-	body := g.body(t, http.MethodPost, pathVAStatus)
-	if body["virtualAccountNo"] != "19008000000000000123" {
-		t.Errorf("virtualAccountNo = %v", body["virtualAccountNo"])
-	}
-	if body["inquiryRequestId"] != "INV-1" {
-		t.Errorf("inquiryRequestId = %v", body["inquiryRequestId"])
-	}
 }
 
-func TestInquiryQRIS(t *testing.T) {
+// TestInquiryByProviderReference verifies that a transaction_id returned as the
+// provider reference can address the status endpoint when no reference_id is
+// supplied.
+func TestInquiryByProviderReference(t *testing.T) {
 	g := newTestGateway(t)
-	g.respond("POST", pathQRISGenerate, `{
-		"responseCode":"2005200","responseMessage":"Successful",
-		"referenceNo":"REF-1","partnerReferenceNo":"INV-1","qrContent":"000201010212"
-	}`)
-	g.respond("POST", pathQRISQuery, `{
-		"responseCode":"2005200","responseMessage":"Successful",
-		"originalReferenceNo":"REF-1","originalPartnerReferenceNo":"INV-1",
-		"serviceCode":"47","latestTransactionStatus":"00","transactionStatusDesc":"Success",
-		"paidTime":"2026-10-14T10:00:00+07:00","amount":{"value":"25000.00","currency":"IDR"}
+	g.respond("GET", "/v2/trx-9/status", `{
+		"status_code":"200","status_message":"OK",
+		"transaction_id":"trx-9","order_id":"INV-9","gross_amount":"5000.00",
+		"transaction_status":"pending"
 	}`)
 	p := newTestProvider(t, g, nil)
 
-	_, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-1", Amount: 25000, Method: provider.MethodQRIS,
-	})
-	if err != nil {
-		t.Fatalf("CreatePayment: %v", err)
-	}
-
-	resp, err := p.Inquiry(context.Background(), &provider.InquiryRequest{ReferenceID: "INV-1"})
+	resp, err := p.Inquiry(context.Background(), &provider.InquiryRequest{ProviderReference: "trx-9"})
 	if err != nil {
 		t.Fatalf("Inquiry: %v", err)
 	}
-	if resp.Status != provider.StatusPaid || resp.Amount != 25000 {
-		t.Errorf("status/amount = %q/%d", resp.Status, resp.Amount)
-	}
-
-	createExt := g.header(t, http.MethodPost, pathQRISGenerate, headerExternalID)
-	body := g.body(t, http.MethodPost, pathQRISQuery)
-	if body["serviceCode"] != qrisServiceCode {
-		t.Errorf("serviceCode = %v, want %q", body["serviceCode"], qrisServiceCode)
-	}
-	if body["originalExternalId"] != createExt {
-		t.Errorf("originalExternalId = %v, want the create X-EXTERNAL-ID %q", body["originalExternalId"], createExt)
-	}
-	if queryExt := g.header(t, http.MethodPost, pathQRISQuery, headerExternalID); queryExt == createExt {
-		t.Error("X-EXTERNAL-ID must differ between create and query")
+	if resp.Status != provider.StatusPending {
+		t.Errorf("Status = %q, want pending", resp.Status)
 	}
 }
 
-func TestInquiryEWallet(t *testing.T) {
+func TestInquiryNotFound(t *testing.T) {
 	g := newTestGateway(t)
-	g.respond("POST", pathDebitCreate, `{
-		"responseCode":"2005600","responseMessage":"Successful",
-		"referenceNo":"REF-2","partnerReferenceNo":"INV-2","webRedirectUrl":"https://x.example/pay"
-	}`)
-	g.respond("POST", pathDebitStatus, `{
-		"responseCode":"2005500","responseMessage":"Successful",
-		"originalReferenceNo":"REF-2","originalPartnerReferenceNo":"INV-2",
-		"serviceCode":"54","latestTransactionStatus":"00",
-		"transAmount":{"value":"5000.00","currency":"IDR"},"paidTime":"2026-10-14T10:05:00+07:00"
-	}`)
+	g.respondStatus("GET", "/v2/NOPE/status", http.StatusNotFound, `{"status_code":"404","status_message":"Transaction doesn't exist"}`)
 	p := newTestProvider(t, g, nil)
 
-	_, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-2", Amount: 5000, Method: provider.MethodEWallet, Channel: "GOPAY",
-	})
-	if err != nil {
-		t.Fatalf("CreatePayment: %v", err)
-	}
-
-	resp, err := p.Inquiry(context.Background(), &provider.InquiryRequest{ReferenceID: "INV-2"})
-	if err != nil {
-		t.Fatalf("Inquiry: %v", err)
-	}
-	if resp.Status != provider.StatusPaid || resp.Amount != 5000 {
-		t.Errorf("status/amount = %q/%d", resp.Status, resp.Amount)
-	}
-
-	createExt := g.header(t, http.MethodPost, pathDebitCreate, headerExternalID)
-	body := g.body(t, http.MethodPost, pathDebitStatus)
-	if body["serviceCode"] != debitServiceCode {
-		t.Errorf("serviceCode = %v, want %q", body["serviceCode"], debitServiceCode)
-	}
-	if body["originalExternalId"] != createExt {
-		t.Errorf("originalExternalId = %v, want %q", body["originalExternalId"], createExt)
-	}
-}
-
-func TestInquiryUnknownReference(t *testing.T) {
-	g := newTestGateway(t)
-	p := newTestProvider(t, g, nil)
-
-	_, err := p.Inquiry(context.Background(), &provider.InquiryRequest{ReferenceID: "nope"})
+	_, err := p.Inquiry(context.Background(), &provider.InquiryRequest{ReferenceID: "NOPE"})
 	if !errors.Is(err, provider.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -713,19 +579,13 @@ func TestInquiryUnknownReference(t *testing.T) {
 
 // --- Cancel -----------------------------------------------------------------
 
-func TestCancelVA(t *testing.T) {
+func TestCancel(t *testing.T) {
 	g := newTestGateway(t)
-	g.respond("POST", pathVACreate, `{
-		"responseCode":"2002700","responseMessage":"Successful",
-		"virtualAccountData":{"virtualAccountNo":"   19008000000000000123","trxId":"INV-1"}
+	g.respond("POST", "/v2/INV-1/cancel", `{
+		"status_code":"200","status_message":"OK",
+		"transaction_id":"trx-1","order_id":"INV-1","transaction_status":"cancel"
 	}`)
-	g.respond("POST", pathVADelete, `{
-		"responseCode":"2003100","responseMessage":"Successful",
-		"virtualAccountData":{"virtualAccountNo":"   19008000000000000123","trxId":"INV-1"}
-	}`)
-	p := newTestProvider(t, g, provider.Config{"partner_service_id": testPartnerSvcID})
-
-	seedVA(t, p)
+	p := newTestProvider(t, g, nil)
 
 	resp, err := p.Cancel(context.Background(), &provider.CancelRequest{ReferenceID: "INV-1"})
 	if err != nil {
@@ -734,210 +594,86 @@ func TestCancelVA(t *testing.T) {
 	if resp.Status != provider.StatusCancelled {
 		t.Errorf("Status = %q, want cancelled", resp.Status)
 	}
-	if !g.hasCalled(http.MethodPost, pathVADelete) {
-		t.Error("expected a delete-va call")
-	}
 }
 
-func TestCancelQRIS(t *testing.T) {
+func TestCancelExpire(t *testing.T) {
 	g := newTestGateway(t)
-	g.respond("POST", pathQRISGenerate, `{
-		"responseCode":"2005200","responseMessage":"Successful",
-		"referenceNo":"REF-1","partnerReferenceNo":"INV-1","qrContent":"000201010212"
-	}`)
-	g.respond("POST", pathQRISCancel, `{
-		"responseCode":"2007700","responseMessage":"Successful",
-		"originalReferenceNo":"REF-1","cancelTime":"2026-10-14T11:00:00+07:00"
+	g.respond("POST", "/v2/INV-2/expire", `{
+		"status_code":"200","status_message":"OK",
+		"transaction_id":"trx-2","order_id":"INV-2","transaction_status":"expire"
 	}`)
 	p := newTestProvider(t, g, nil)
 
-	_, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-1", Amount: 25000, Method: provider.MethodQRIS,
-	})
-	if err != nil {
-		t.Fatalf("CreatePayment: %v", err)
-	}
-
-	createExt := g.header(t, http.MethodPost, pathQRISGenerate, headerExternalID)
-	resp, err := p.Cancel(context.Background(), &provider.CancelRequest{ReferenceID: "INV-1", Reason: "expire"})
+	resp, err := p.Cancel(context.Background(), &provider.CancelRequest{ReferenceID: "INV-2", Reason: "expire"})
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if resp.Status != provider.StatusCancelled {
-		t.Errorf("Status = %q, want cancelled", resp.Status)
-	}
-	body := g.body(t, http.MethodPost, pathQRISCancel)
-	if body["reason"] != "expire" {
-		t.Errorf("reason = %v, want expire", body["reason"])
-	}
-	if body["originalExternalId"] != createExt {
-		t.Errorf("originalExternalId = %v, want %q", body["originalExternalId"], createExt)
+	if resp.Status != provider.StatusExpired {
+		t.Errorf("Status = %q, want expired", resp.Status)
 	}
 }
 
-func TestCancelUnknownReference(t *testing.T) {
+func TestCancelErrors(t *testing.T) {
 	g := newTestGateway(t)
 	p := newTestProvider(t, g, nil)
 
-	if _, err := p.Cancel(context.Background(), &provider.CancelRequest{ReferenceID: "nope"}); !errors.Is(err, provider.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-}
-
-// TestCreateEWalletWithoutReturnURL verifies the e-wallet PAY_RETURN url is
-// omitted (not taken from any callback configuration) when the payment request
-// does not supply metadata["return_url"].
-func TestCreateEWalletWithoutReturnURL(t *testing.T) {
-	g := newTestGateway(t)
-	g.respond("POST", pathDebitCreate, `{
-		"responseCode":"2005600","responseMessage":"Successful",
-		"referenceNo":"REF-2","partnerReferenceNo":"INV-2"
-	}`)
-	p := newTestProvider(t, g, nil)
-
-	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-2", Amount: 10000, Method: provider.MethodEWallet, Channel: "GOPAY",
-	}); err != nil {
-		t.Fatalf("CreatePayment: %v", err)
-	}
-	body := g.body(t, http.MethodPost, pathDebitCreate)
-	if params, ok := body["urlParams"]; ok {
-		t.Errorf("urlParams = %v, want omitted without metadata return_url", params)
-	}
-}
-
-// TestQRISSubMerchantID verifies the per-payment QRIS merchant id supplied via
-// metadata["sub_merchant_id"] addresses the generate call and is reused for the
-// matching status query and cancel.
-func TestQRISSubMerchantID(t *testing.T) {
-	g := newTestGateway(t)
-	g.respond("POST", pathQRISGenerate, `{
-		"responseCode":"2005200","responseMessage":"Successful",
-		"referenceNo":"REF-1","partnerReferenceNo":"INV-1","qrContent":"000201010212"
-	}`)
-	g.respond("POST", pathQRISQuery, `{
-		"responseCode":"2005200","responseMessage":"Successful",
-		"originalReferenceNo":"REF-1","originalPartnerReferenceNo":"INV-1",
-		"serviceCode":"47","latestTransactionStatus":"00","amount":{"value":"25000.00","currency":"IDR"}
-	}`)
-	g.respond("POST", pathQRISCancel, `{
-		"responseCode":"2007700","responseMessage":"Successful",
-		"originalReferenceNo":"REF-1"
-	}`)
-	p := newTestProvider(t, g, nil)
-
-	const subMerchant = "00007100010926"
-	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-1", Amount: 25000, Method: provider.MethodQRIS,
-		Metadata: map[string]string{"sub_merchant_id": subMerchant},
-	}); err != nil {
-		t.Fatalf("CreatePayment: %v", err)
-	}
-	if got := g.body(t, http.MethodPost, pathQRISGenerate)["merchantId"]; got != subMerchant {
-		t.Errorf("generate merchantId = %v, want %q", got, subMerchant)
-	}
-
-	if _, err := p.Inquiry(context.Background(), &provider.InquiryRequest{ReferenceID: "INV-1"}); err != nil {
-		t.Fatalf("Inquiry: %v", err)
-	}
-	if got := g.body(t, http.MethodPost, pathQRISQuery)["merchantId"]; got != subMerchant {
-		t.Errorf("query merchantId = %v, want %q", got, subMerchant)
-	}
-
-	if _, err := p.Cancel(context.Background(), &provider.CancelRequest{ReferenceID: "INV-1"}); err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	if got := g.body(t, http.MethodPost, pathQRISCancel)["merchantId"]; got != subMerchant {
-		t.Errorf("cancel merchantId = %v, want %q", got, subMerchant)
+	if _, err := p.Cancel(context.Background(), &provider.CancelRequest{}); !errors.Is(err, provider.ErrInvalidRequest) {
+		t.Fatalf("expected ErrInvalidRequest for an empty request, got %v", err)
 	}
 }
 
 // --- ParseWebhook -----------------------------------------------------------
 
-func TestParseWebhookVA(t *testing.T) {
+func TestParseWebhook(t *testing.T) {
 	g := newTestGateway(t)
 	p := newTestProvider(t, g, nil)
 	body := []byte(`{
-		"partnerServiceId":"   19008","customerNo":"000000000000000123",
-		"virtualAccountNo":"   19008000000000000123","virtualAccountName":"Test",
-		"trxId":"INV-1","paymentRequestId":"PAY-1",
-		"paidAmount":{"value":"10000.00","currency":"IDR"},
-		"referenceNo":"REF-1",
-		"additionalInfo":{"bank":"BCA","paymentFlagStatus":"00","merchantId":"G123456789","paidTime":"2026-10-14T10:00:00+07:00"}
+		"transaction_time":"2026-10-14 10:00:00","transaction_status":"settlement",
+		"transaction_id":"trx-1","status_message":"midtrans payment notification",
+		"status_code":"200","signature_key":"abc","payment_type":"bank_transfer",
+		"order_id":"INV-1","gross_amount":"10000.00","fraud_status":"accept",
+		"settlement_time":"2026-10-14 10:05:00",
+		"va_numbers":[{"bank":"bca","va_number":"12345678"}]
 	}`)
-	evt, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{Path: pathVANotify, Body: body})
+	evt, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{Body: body})
 	if err != nil {
 		t.Fatalf("ParseWebhook: %v", err)
 	}
 	if evt.EventType != EventVAPayment {
 		t.Errorf("EventType = %q", evt.EventType)
 	}
-	if evt.ReferenceID != "INV-1" {
-		t.Errorf("ReferenceID = %q", evt.ReferenceID)
+	if evt.ReferenceID != "INV-1" || evt.ProviderReference != "trx-1" {
+		t.Errorf("references = %q/%q", evt.ReferenceID, evt.ProviderReference)
 	}
-	if evt.ProviderReference != "19008000000000000123" {
-		t.Errorf("ProviderReference = %q", evt.ProviderReference)
-	}
-	if evt.Status != provider.StatusPaid {
-		t.Errorf("Status = %q, want paid", evt.Status)
-	}
-	if evt.Amount != 10000 {
-		t.Errorf("Amount = %d, want 10000", evt.Amount)
+	if evt.Status != provider.StatusPaid || evt.Amount != 10000 {
+		t.Errorf("status/amount = %q/%d", evt.Status, evt.Amount)
 	}
 	if evt.PaidAt == nil {
 		t.Error("expected paid_at")
 	}
 }
 
-func TestParseWebhookQRIS(t *testing.T) {
+func TestParseWebhookEventTypes(t *testing.T) {
 	g := newTestGateway(t)
 	p := newTestProvider(t, g, nil)
-	body := []byte(`{
-		"originalReferenceNo":"REF-1","originalPartnerReferenceNo":"INV-1",
-		"latestTransactionStatus":"00","transactionStatusDesc":"success",
-		"amount":{"value":"25000.00","currency":"IDR"},"externalStoreID":"STORE-1",
-		"additionalInfo":{"qris":{"issuerName":"gopay","acquirerName":"gopay","transactionType":"ON-US"}}
-	}`)
-	evt, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{Path: pathQRISNotify, Body: body})
-	if err != nil {
-		t.Fatalf("ParseWebhook: %v", err)
-	}
-	if evt.EventType != EventQRISPayment {
-		t.Errorf("EventType = %q", evt.EventType)
-	}
-	if evt.ReferenceID != "INV-1" || evt.ProviderReference != "REF-1" {
-		t.Errorf("references = %q/%q", evt.ReferenceID, evt.ProviderReference)
-	}
-	if evt.Status != provider.StatusPaid || evt.Amount != 25000 {
-		t.Errorf("status/amount = %q/%d", evt.Status, evt.Amount)
-	}
-}
 
-func TestParseWebhookEWallet(t *testing.T) {
-	g := newTestGateway(t)
-	p := newTestProvider(t, g, nil)
-	body := []byte(`{
-		"createdTime":"2026-10-14T10:00:00+07:00","latestTransactionStatus":"00",
-		"originalReferenceNo":"REF-2","finishedTime":"2026-10-14T10:05:00+07:00",
-		"originalPartnerReferenceNo":"INV-2","transactionStatusDesc":"success",
-		"originalExternalId":"1234567890","amount":{"value":"5000.00","currency":"IDR"},
-		"additionalInfo":{"userPaymentDetails":[{"payMethod":"gopay","payOption":"GOPAY_WALLET"}]}
-	}`)
-	evt, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{Path: pathDBNotify, Body: body})
-	if err != nil {
-		t.Fatalf("ParseWebhook: %v", err)
+	cases := map[string]string{
+		"bank_transfer": EventVAPayment,
+		"echannel":      EventVAPayment,
+		"qris":          EventQRISPayment,
+		"gopay":         EventEWalletPayment,
+		"shopeepay":     EventEWalletPayment,
+		"cstore":        EventRetailPayment,
 	}
-	if evt.EventType != EventEWalletPayment {
-		t.Errorf("EventType = %q", evt.EventType)
-	}
-	if evt.ReferenceID != "INV-2" || evt.ProviderReference != "REF-2" {
-		t.Errorf("references = %q/%q", evt.ReferenceID, evt.ProviderReference)
-	}
-	if evt.Status != provider.StatusPaid || evt.Amount != 5000 {
-		t.Errorf("status/amount = %q/%d", evt.Status, evt.Amount)
-	}
-	if evt.PaidAt == nil {
-		t.Error("expected paid_at from finishedTime")
+	for paymentType, want := range cases {
+		body := []byte(`{"order_id":"INV-1","transaction_id":"trx-1","transaction_status":"pending","gross_amount":"1000.00","payment_type":"` + paymentType + `"}`)
+		evt, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{Body: body})
+		if err != nil {
+			t.Fatalf("ParseWebhook(%s): %v", paymentType, err)
+		}
+		if evt.EventType != want {
+			t.Errorf("payment_type %s => %q, want %q", paymentType, evt.EventType, want)
+		}
 	}
 }
 
@@ -949,32 +685,30 @@ func TestParseWebhookStatuses(t *testing.T) {
 		status string
 		want   provider.Status
 	}{
-		{"03", provider.StatusPending},
-		{"05", provider.StatusCancelled},
-		{"06", provider.StatusFailed},
-		{"08", provider.StatusExpired},
+		{"pending", provider.StatusPending},
+		{"settlement", provider.StatusPaid},
+		{"cancel", provider.StatusCancelled},
+		{"expire", provider.StatusExpired},
+		{"deny", provider.StatusFailed},
 	}
 	for _, tc := range cases {
-		body := []byte(`{"originalReferenceNo":"REF","latestTransactionStatus":"` + tc.status + `","additionalInfo":{"qris":{"issuerName":"x"}}}`)
-		evt, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{Path: pathQRISNotify, Body: body})
+		body := []byte(`{"order_id":"INV-1","transaction_id":"trx-1","transaction_status":"` + tc.status + `","gross_amount":"1000.00"}`)
+		evt, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{Body: body})
 		if err != nil {
 			t.Fatalf("ParseWebhook(%s): %v", tc.status, err)
 		}
 		if evt.Status != tc.want {
 			t.Errorf("status %s => %q, want %q", tc.status, evt.Status, tc.want)
 		}
-		if evt.PaidAt != nil {
-			t.Errorf("status %s must not carry paid_at", tc.status)
-		}
 	}
 }
 
-func TestParseWebhookUnknownShape(t *testing.T) {
+func TestParseWebhookNotCorrelatable(t *testing.T) {
 	g := newTestGateway(t)
 	p := newTestProvider(t, g, nil)
 
-	if _, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{Body: []byte(`{"foo":"bar"}`)}); !errors.Is(err, provider.ErrInvalidRequest) {
-		t.Fatalf("expected ErrInvalidRequest, got %v", err)
+	if _, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{Body: []byte(`{"transaction_status":"pending"}`)}); !errors.Is(err, provider.ErrInvalidRequest) {
+		t.Fatalf("expected ErrInvalidRequest for an uncorrelatable body, got %v", err)
 	}
 	if _, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{}); !errors.Is(err, provider.ErrInvalidRequest) {
 		t.Fatalf("expected ErrInvalidRequest for an empty body, got %v", err)
@@ -985,143 +719,94 @@ func TestParseWebhookUnknownShape(t *testing.T) {
 
 func TestVerifyWebhookSignature(t *testing.T) {
 	g := newTestGateway(t)
-	midKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate midtrans key: %v", err)
-	}
-	pub, err := encodePublicKey(&midKey.PublicKey)
-	if err != nil {
-		t.Fatalf("encode public key: %v", err)
-	}
-	p := newTestProvider(t, g, provider.Config{"public_key": pub})
+	p := newTestProvider(t, g, nil)
 
-	body := []byte(`{"partnerServiceId":"   19008","virtualAccountNo":"VA-1","trxId":"INV-1"}`)
-	timestamp := time.Now().In(jakarta).Format(iso8601Layout)
-
-	// Midtrans signs over the documented notification path, while our callback
-	// arrives on /webhooks/midtrans; verification must try both.
-	sign := func(body []byte, endpoint string) string {
-		canonical, err := minify(body)
-		if err != nil {
-			t.Fatalf("minify: %v", err)
+	body := []byte(`{"order_id":"INV-1","status_code":"200","gross_amount":"10000.00","transaction_id":"trx-1"}`)
+	sign := func(b []byte) string {
+		var n notification
+		if err := json.Unmarshal(b, &n); err != nil {
+			t.Fatalf("unmarshal: %v", err)
 		}
-		digest := sha256.Sum256([]byte(notificationStringToSign(http.MethodPost, endpoint, canonical, timestamp)))
-		sig, err := rsa.SignPKCS1v15(rand.Reader, midKey, crypto.SHA256, digest[:])
-		if err != nil {
-			t.Fatalf("sign: %v", err)
-		}
-		return base64.StdEncoding.EncodeToString(sig)
+		return notificationSignature(n.OrderID, n.StatusCode, n.GrossAmount, testServerKey)
 	}
 
-	req := &provider.WebhookRequest{
-		Headers: http.Header{},
-		Path:    "/webhooks/midtrans",
-		Body:    body,
-	}
-	req.Headers.Set(headerSignature, sign(body, pathVANotify))
-	req.Headers.Set(headerTimestamp, timestamp)
-	if err := p.VerifyWebhookSignature(req); err != nil {
-		t.Errorf("valid signature (documented endpoint) rejected: %v", err)
+	valid, _ := json.Marshal(map[string]any{
+		"order_id": "INV-1", "status_code": "200", "gross_amount": "10000.00",
+		"transaction_id": "trx-1", "signature_key": sign(body),
+	})
+	if err := p.VerifyWebhookSignature(&provider.WebhookRequest{Body: valid}); err != nil {
+		t.Errorf("valid signature rejected: %v", err)
 	}
 
-	req.Headers.Set(headerSignature, sign(body, "/webhooks/midtrans"))
-	if err := p.VerifyWebhookSignature(req); err != nil {
-		t.Errorf("valid signature (received path) rejected: %v", err)
-	}
-
-	req.Headers.Set(headerSignature, sign([]byte(`{"tampered":true}`), pathVANotify))
-	if err := p.VerifyWebhookSignature(req); !errors.Is(err, provider.ErrInvalidSignature) {
+	tampered, _ := json.Marshal(map[string]any{
+		"order_id": "INV-1", "status_code": "200", "gross_amount": "99999.00",
+		"signature_key": sign(body),
+	})
+	if err := p.VerifyWebhookSignature(&provider.WebhookRequest{Body: tampered}); !errors.Is(err, provider.ErrInvalidSignature) {
 		t.Errorf("expected ErrInvalidSignature for a tampered body, got %v", err)
 	}
 
-	req.Headers.Set(headerSignature, "not-base64!!")
-	if err := p.VerifyWebhookSignature(req); !errors.Is(err, provider.ErrInvalidSignature) {
-		t.Errorf("expected ErrInvalidSignature for a malformed signature, got %v", err)
+	missing, _ := json.Marshal(map[string]any{"order_id": "INV-1", "status_code": "200", "gross_amount": "10000.00"})
+	if err := p.VerifyWebhookSignature(&provider.WebhookRequest{Body: missing}); !errors.Is(err, provider.ErrInvalidSignature) {
+		t.Errorf("expected ErrInvalidSignature without signature_key, got %v", err)
 	}
-
-	req.Headers.Del(headerTimestamp)
-	if err := p.VerifyWebhookSignature(req); !errors.Is(err, provider.ErrInvalidSignature) {
-		t.Errorf("expected ErrInvalidSignature for a missing header, got %v", err)
+	if err := p.VerifyWebhookSignature(&provider.WebhookRequest{Body: []byte("not json")}); !errors.Is(err, provider.ErrInvalidSignature) {
+		t.Errorf("expected ErrInvalidSignature for a malformed body, got %v", err)
 	}
-}
-
-func TestVerifyWebhookSignatureRequiresPublicKey(t *testing.T) {
-	g := newTestGateway(t)
-	p := newTestProvider(t, g, nil) // no public_key
-
-	err := p.VerifyWebhookSignature(&provider.WebhookRequest{
-		Headers: http.Header{headerSignature: {"x"}, headerTimestamp: {"y"}},
-		Body:    []byte(`{}`),
-	})
-	if !errors.Is(err, provider.ErrInvalidSignature) {
-		t.Fatalf("expected ErrInvalidSignature without public_key, got %v", err)
-	}
-}
-
-func TestWebhookResponse(t *testing.T) {
-	g := newTestGateway(t)
-	p := newTestProvider(t, g, nil)
-
-	for _, tc := range []struct {
-		event string
-		code  string
-	}{
-		{EventVAPayment, responseVAPayment},
-		{EventQRISPayment, responseQRISPayment},
-		{EventEWalletPayment, responseEWalletPayment},
-	} {
-		status, body := p.WebhookResponse(&provider.WebhookEvent{EventType: tc.event})
-		if status != http.StatusOK {
-			t.Errorf("%s: status = %d, want 200", tc.event, status)
-		}
-		if !strings.Contains(string(body), tc.code) {
-			t.Errorf("%s: body = %s, want code %s", tc.event, body, tc.code)
-		}
-	}
-}
-
-// --- token caching ----------------------------------------------------------
-
-func TestTokenCached(t *testing.T) {
-	g := newTestGateway(t)
-	g.respond("POST", pathQRISGenerate, `{"responseCode":"2005200","responseMessage":"Successful","qrContent":"00"}`)
-	p := newTestProvider(t, g, nil)
-
-	for i := 0; i < 3; i++ {
-		if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-			ReferenceID: "INV-" + strconv.Itoa(i), Amount: 1000, Method: provider.MethodQRIS,
-		}); err != nil {
-			t.Fatalf("CreatePayment %d: %v", i, err)
-		}
-	}
-	g.mu.Lock()
-	calls := g.tokenCalls
-	g.mu.Unlock()
-	if calls != 1 {
-		t.Errorf("token fetched %d times, want 1 (cached)", calls)
+	if err := p.VerifyWebhookSignature(&provider.WebhookRequest{}); !errors.Is(err, provider.ErrInvalidSignature) {
+		t.Errorf("expected ErrInvalidSignature for an empty body, got %v", err)
 	}
 }
 
 // --- mapping and helpers ----------------------------------------------------
 
 func TestMapTransactionStatus(t *testing.T) {
-	cases := map[string]provider.Status{
-		"00": provider.StatusPaid,
-		"01": provider.StatusPending,
-		"02": provider.StatusPending,
-		"03": provider.StatusPending,
-		"04": provider.StatusRefunded,
-		"05": provider.StatusCancelled,
-		"06": provider.StatusFailed,
-		"07": provider.StatusFailed,
-		"08": provider.StatusExpired,
-		"09": provider.StatusFailed,
-		"99": provider.StatusUnknown,
-		"":   provider.StatusUnknown,
+	cases := []struct {
+		status string
+		fraud  string
+		want   provider.Status
+	}{
+		{"capture", "accept", provider.StatusPaid},
+		{"capture", "deny", provider.StatusFailed},
+		{"settlement", "", provider.StatusPaid},
+		{"pending", "", provider.StatusPending},
+		{"authorize", "", provider.StatusPending},
+		{"deny", "", provider.StatusFailed},
+		{"failure", "", provider.StatusFailed},
+		{"cancel", "", provider.StatusCancelled},
+		{"expire", "", provider.StatusExpired},
+		{"refund", "", provider.StatusRefunded},
+		{"chargeback", "", provider.StatusRefunded},
+		{"nonsense", "", provider.StatusUnknown},
+		{"", "", provider.StatusUnknown},
 	}
-	for code, want := range cases {
-		if got := mapTransactionStatus(code); got != want {
-			t.Errorf("mapTransactionStatus(%q) = %q, want %q", code, got, want)
+	for _, tc := range cases {
+		if got := mapTransactionStatus(tc.status, tc.fraud); got != tc.want {
+			t.Errorf("mapTransactionStatus(%q,%q) = %q, want %q", tc.status, tc.fraud, got, tc.want)
+		}
+	}
+}
+
+func TestClassifyStatus(t *testing.T) {
+	cases := []struct {
+		httpStatus int
+		code       string
+		want       error
+	}{
+		{200, "200", nil},
+		{0, "406", provider.ErrDuplicateReference},
+		{409, "", provider.ErrDuplicateReference},
+		{0, "401", provider.ErrUnauthorized},
+		{403, "", provider.ErrUnauthorized},
+		{0, "404", provider.ErrNotFound},
+		{404, "", provider.ErrNotFound},
+		{0, "400", provider.ErrInvalidRequest},
+		{422, "", provider.ErrInvalidRequest},
+		{500, "", provider.ErrGateway},
+	}
+	for _, tc := range cases {
+		if got := classifyStatus(tc.httpStatus, tc.code); got != tc.want {
+			t.Errorf("classifyStatus(%d,%q) = %v, want %v", tc.httpStatus, tc.code, got, tc.want)
 		}
 	}
 }
@@ -1135,7 +820,7 @@ func TestParseAmount(t *testing.T) {
 		{"25000.00", 25000, false},
 		{"10000", 10000, false},
 		{"1", 1, false},
-		{"", 0, true},
+		{"", 0, false},
 		{"1000.50", 0, true},
 		{"abc", 0, true},
 	}
@@ -1153,42 +838,53 @@ func TestParseAmount(t *testing.T) {
 	}
 }
 
-func TestFormatAmountAndPayload(t *testing.T) {
-	if formatAmount(10000) != "10000.00" {
-		t.Errorf("formatAmount = %q", formatAmount(10000))
-	}
-	payload := amountPayloadOf(25000)
-	if payload.Value != "25000.00" || payload.Currency != "IDR" {
-		t.Errorf("amountPayloadOf = %+v", payload)
-	}
-}
-
-func TestClassifyCode(t *testing.T) {
-	cases := map[string]error{
-		"2002700": nil,
-		"4015400": provider.ErrUnauthorized,
-		"4045400": provider.ErrNotFound,
-		"4095201": provider.ErrDuplicateReference,
-		"4005400": provider.ErrInvalidRequest,
-		"5005400": provider.ErrGateway,
-	}
-	for code, want := range cases {
-		if got := classifyCode(code); got != want {
-			t.Errorf("classifyCode(%q) = %v, want %v", code, got, want)
-		}
-	}
-}
-
 func TestParseTime(t *testing.T) {
-	tm := parseTime("2026-10-14T10:00:00+07:00")
+	tm := parseTime("2026-10-14 10:00:00")
 	if tm == nil {
 		t.Fatal("expected a parsed time")
 	}
 	if _, offset := tm.Zone(); offset != 7*60*60 {
 		t.Errorf("offset = %d, want +7h", offset)
 	}
+	if iso := parseTime("2026-10-14T10:00:00+07:00"); iso == nil {
+		t.Error("expected an ISO-8601 timestamp to parse")
+	}
 	if parseTime("") != nil || parseTime("not-a-time") != nil {
 		t.Error("empty or unparseable values must yield nil")
+	}
+}
+
+func TestCustomExpiryOf(t *testing.T) {
+	if customExpiryOf(0) != nil {
+		t.Error("zero duration must yield nil")
+	}
+	day := customExpiryOf(24 * time.Hour)
+	if day == nil || day.Unit != "day" || day.ExpiryDuration != 1 {
+		t.Errorf("customExpiryOf(24h) = %+v", day)
+	}
+	hour := customExpiryOf(2 * time.Hour)
+	if hour == nil || hour.Unit != "hour" || hour.ExpiryDuration != 2 {
+		t.Errorf("customExpiryOf(2h) = %+v", hour)
+	}
+	minute := customExpiryOf(90 * time.Minute)
+	if minute == nil || minute.Unit != "minute" || minute.ExpiryDuration != 90 {
+		t.Errorf("customExpiryOf(90m) = %+v", minute)
+	}
+}
+
+func TestAddressID(t *testing.T) {
+	cases := []struct {
+		reference, providerRef, want string
+	}{
+		{"INV-1", "trx-1", "INV-1"},
+		{"", "trx-1", "trx-1"},
+		{"INV-1", "", "INV-1"},
+		{"", "", ""},
+	}
+	for _, tc := range cases {
+		if got := addressID(tc.reference, tc.providerRef); got != tc.want {
+			t.Errorf("addressID(%q,%q) = %q, want %q", tc.reference, tc.providerRef, got, tc.want)
+		}
 	}
 }
 
@@ -1207,98 +903,24 @@ func TestSplitName(t *testing.T) {
 	}
 }
 
-func TestCustomerNoIsDeterministicAndNumeric(t *testing.T) {
-	a := customerNo("INV-0001")
-	b := customerNo("INV-0001")
-	if a != b {
-		t.Errorf("customerNo is not deterministic: %q vs %q", a, b)
+func TestNotificationSignature(t *testing.T) {
+	// Deterministic cross-check against a hand-computed SHA-512 of the
+	// concatenation.
+	got := notificationSignature("INV-1", "200", "10000.00", "SB-Mid-server-TESTKEY")
+	want := "0868c1f6133e6b8a938fe40e069c989e7f9b00444387ec22db2ef1afe73b4541970bc65372407fdd3ef0f1966fefab95bd4e9812e49a3e00c84d275570a5313a"
+	if got != want {
+		t.Errorf("notificationSignature = %q, want %q", got, want)
 	}
-	if a == customerNo("INV-0002") {
-		t.Error("different references should produce different customer numbers")
-	}
-	if !isDigits(a) || len(a) != 10 {
-		t.Errorf("customerNo = %q, want 10 digits", a)
-	}
-}
-
-func TestExternalIDIsUniqueAndNumeric(t *testing.T) {
-	seen := make(map[string]struct{}, 100)
-	for i := 0; i < 100; i++ {
-		id := externalID()
-		if !isDigits(id) {
-			t.Fatalf("externalID = %q, want a numeric string", id)
-		}
-		if _, dup := seen[id]; dup {
-			t.Fatalf("externalID produced a duplicate: %q", id)
-		}
-		seen[id] = struct{}{}
-	}
-}
-
-func TestExpiryDefaultAndOverride(t *testing.T) {
-	g := newTestGateway(t)
-	p := newTestProvider(t, g, nil)
-
-	if got := p.expiry(0); time.Until(got) > defaultExpiry || time.Until(got) < defaultExpiry-time.Minute {
-		t.Errorf("expiry(0) = %v, want ~%v from now", got, defaultExpiry)
-	}
-	if got := p.expiry(2 * time.Hour); time.Until(got) > 2*time.Hour || time.Until(got) < 2*time.Hour-time.Minute {
-		t.Errorf("expiry(2h) = %v, want ~2h from now", got)
-	}
-	if got := p.expiry(maxExpiry + 48*time.Hour); time.Until(got) > maxExpiry {
-		t.Errorf("expiry should clamp to %v", maxExpiry)
-	}
-}
-
-func TestFlexInt(t *testing.T) {
-	cases := map[string]flexInt{
-		`900`:    900,
-		`"900"`:  900,
-		`null`:   0,
-		`""`:     0,
-		`"1800"`: 1800,
-	}
-	for raw, want := range cases {
-		var got flexInt
-		if err := json.Unmarshal([]byte(raw), &got); err != nil {
-			t.Errorf("flexInt(%s): %v", raw, err)
-			continue
-		}
-		if got != want {
-			t.Errorf("flexInt(%s) = %d, want %d", raw, got, want)
+	// The signature must be sensitive to every input.
+	base := notificationSignature("INV-1", "200", "10000.00", "k")
+	for _, other := range []string{
+		notificationSignature("INV-2", "200", "10000.00", "k"),
+		notificationSignature("INV-1", "201", "10000.00", "k"),
+		notificationSignature("INV-1", "200", "10000.01", "k"),
+		notificationSignature("INV-1", "200", "10000.00", "k2"),
+	} {
+		if other == base {
+			t.Errorf("signature did not change for a modified input")
 		}
 	}
-	if err := json.Unmarshal([]byte(`"nope"`), new(flexInt)); err == nil {
-		t.Error("expected an error for a non-numeric string")
-	}
-}
-
-// --- helpers ----------------------------------------------------------------
-
-func seedVA(t *testing.T, p *Provider) {
-	t.Helper()
-	if _, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "INV-1", Amount: 10000, Method: provider.MethodVirtualAccount, Channel: "BCA",
-	}); err != nil {
-		t.Fatalf("seed VA: %v", err)
-	}
-}
-
-func (g *testGateway) hasCalled(method, path string) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	_, ok := g.lastBody[method+" "+path]
-	return ok
-}
-
-func isDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
