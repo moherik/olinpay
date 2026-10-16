@@ -12,6 +12,7 @@ import { SelectControl } from "@/components/ui/select";
 import { Tag } from "@/components/ui/status-tag";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { DialogContent, DialogRoot } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   DropdownContent,
   DropdownItem,
@@ -147,25 +148,46 @@ export default function UsersPage() {
                           Change role
                         </DropdownItem>
                         <DropdownSeparator />
-                        <DropdownItem
-                          tone={user.status === "active" ? "danger" : "default"}
-                          onSelect={() => {
-                            const nextStatus =
-                              user.status === "active" ? "suspended" : "active";
-                            setUsers((current) =>
-                              current.map((row) =>
-                                row.id === user.id
-                                  ? { ...row, status: nextStatus }
-                                  : row,
-                              ),
-                            );
-                            notify(
-                              `${user.email} is now ${nextStatus}. Existing sessions are ended.`,
-                            );
-                          }}
-                        >
-                          {user.status === "active" ? "Suspend access" : "Restore access"}
-                        </DropdownItem>
+                        {user.status === "active" ? (
+                          <ConfirmDialog
+                            trigger={
+                              <DropdownItem tone="danger" onSelect={() => {}}>
+                                Suspend access
+                              </DropdownItem>
+                            }
+                            title="Suspend user access?"
+                            description={`Suspend ${user.email}? They will not be able to sign in until restored.`}
+                            confirmLabel="Suspend"
+                            onConfirm={() => {
+                              setUsers((current) =>
+                                current.map((row) =>
+                                  row.id === user.id ? { ...row, status: "suspended" } : row,
+                                ),
+                              );
+                              notify(`${user.email} is now suspended. Existing sessions are ended.`);
+                            }}
+                          />
+                        ) : (
+                          <ConfirmDialog
+                            trigger={
+                              <DropdownItem onSelect={() => {}}>
+                                Restore access
+                              </DropdownItem>
+                            }
+                            title="Restore user access?"
+                            description={`Restore ${user.email}? They will be able to sign in again.`}
+                            confirmLabel="Restore"
+                            confirmVariant="primary"
+                            onConfirm={() => {
+                              setUsers((current) =>
+                                current.map((row) =>
+                                  row.id === user.id ? { ...row, status: "active" } : row,
+                                ),
+                              );
+                              notify(`${user.email} is now active. Existing sessions are ended.`);
+                            }}
+                          />
+                        )}
                       </DropdownContent>
                     </DropdownRoot>
                   </TD>

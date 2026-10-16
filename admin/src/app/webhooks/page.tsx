@@ -10,6 +10,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CodeBlock } from "@/components/ui/code";
 import { DialogContent, DialogRoot } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   TabsContent,
   TabsList,
@@ -119,7 +120,7 @@ export default function WebhooksPage() {
                       <TD className="font-mono text-[12.5px]">{row.event}</TD>
                       <TD>{row.merchant}</TD>
                       <TD
-                        className="max-w-[240px] truncate font-mono text-[12px] text-secondary"
+                        className="max-w-[280px] truncate font-mono text-[12px] text-secondary"
                         title={row.url}
                       >
                         {row.url}
@@ -130,7 +131,7 @@ export default function WebhooksPage() {
                       <TD className="num text-right">
                         {row.attempts} / {row.maxAttempts}
                       </TD>
-                      <TD className="max-w-[200px] truncate text-secondary">
+                      <TD className="max-w-[240px] truncate text-secondary">
                         {row.lastError ?? "\u2014"}
                       </TD>
                       <TD className="num whitespace-nowrap text-secondary">
@@ -146,14 +147,22 @@ export default function WebhooksPage() {
                             Payload
                           </Button>
                           {row.status === "failed" ? (
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              disabled={retrying === row.id}
-                              onClick={() => retry(row.id)}
-                            >
-                              {retrying === row.id ? "Retrying\u2026" : "Retry"}
-                            </Button>
+                            <ConfirmDialog
+                              trigger={
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  disabled={retrying === row.id}
+                                >
+                                  {retrying === row.id ? "Retrying\u2026" : "Retry"}
+                                </Button>
+                              }
+                              title="Retry webhook delivery?"
+                              description={`Retry delivery of ${row.event} to ${row.merchant}? This will requeue with backoff.`}
+                              confirmLabel="Retry"
+                              confirmVariant="primary"
+                              onConfirm={() => retry(row.id)}
+                            />
                           ) : (
                             <Button
                               variant="ghost"
@@ -218,18 +227,23 @@ export default function WebhooksPage() {
                       <TD className="num whitespace-nowrap text-secondary">
                         {formatDateTime(row.receivedAt)}
                       </TD>
-                      <TD className="max-w-[240px] text-secondary">
+                      <TD className="max-w-[280px] text-secondary">
                         {row.note ?? "\u2014"}
                       </TD>
                       <TD className="text-right">
                         {row.signatureValid && !row.parsed ? (
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => setReprocessTarget(row.id)}
-                          >
-                            Reprocess
-                          </Button>
+                          <ConfirmDialog
+                            trigger={
+                              <Button variant="secondary" size="sm">
+                                Reprocess
+                              </Button>
+                            }
+                            title="Reprocess this callback?"
+                            description="The signature is valid, so the payload is trusted. The platform will look up the payment and apply the state it reports."
+                            confirmLabel="Reprocess"
+                            confirmVariant="primary"
+                            onConfirm={() => setReprocessTarget(row.id)}
+                          />
                         ) : (
                           <span className="text-[12px] text-muted">
                             {row.signatureValid ? "Applied" : "Rejected"}
@@ -304,14 +318,13 @@ export default function WebhooksPage() {
                   setReprocessTarget(null);
                 }}
               >
-                Reprocess callback
+                Reprocess
               </Button>
             </>
           }
         >
-          <p className="text-[13px] text-secondary">
-            Reprocessing is matched on the payment reference, so applying the
-            same callback twice does not change the payment state again.
+          <p className="text-[13px] text-muted">
+            Reprocessing is matched on the payment reference; running twice is safe in this demo.
           </p>
         </DialogContent>
       </DialogRoot>

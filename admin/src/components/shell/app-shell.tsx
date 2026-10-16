@@ -55,7 +55,10 @@ const navGroups = [
   },
   {
     label: "Security",
-    items: [{ href: "/audit", label: "Audit log", icon: IconAudit }],
+    items: [
+      { href: "/api-keys", label: "API keys", icon: IconProviders },
+      { href: "/audit", label: "Audit log", icon: IconAudit },
+    ],
   },
 ];
 

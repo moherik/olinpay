@@ -161,18 +161,7 @@ export function RoutingStudio({
               hint={`${graph.nodes.length} nodes, ${graph.edges.length} edges • ${issueCountLabel(issues.length)}`}
               action={
                 <div className="flex flex-wrap items-center gap-1">
-                  <Button size="sm" variant="secondary" onClick={() => addNode("condition")}>
-                    Add condition
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => addNode("provider")}>
-                    Add provider
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => addNode("modify")}>
-                    Add modify
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => addNode("respond")}>
-                    Add respond
-                  </Button>
+
                   <Button size="sm" variant="ghost" onClick={() => setCompiledOpen(true)}>
                     View compiled
                   </Button>
@@ -218,6 +207,39 @@ export function RoutingStudio({
                 >
                   <Controls />
                 </ReactFlow>
+              </div>
+              <div className="flex flex-wrap items-center gap-1 pt-3">
+                <div className="inline-flex items-center gap-0.5 rounded-control border border-border bg-surface-muted p-0.5" role="group" aria-label="Add routing nodes">
+                  <Button size="sm" variant="ghost" aria-label="Add condition node" title="Add condition" onClick={() => addNode("condition")} className="gap-1.5 px-2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M9 18L4 12L9 6" />
+                      <path d="M15 6L20 12L15 18" />
+                    </svg>
+                    <span>Condition</span>
+                  </Button>
+                  <Button size="sm" variant="ghost" aria-label="Add provider node" title="Add provider" onClick={() => addNode("provider")} className="gap-1.5 px-2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <rect x="4" y="4" width="16" height="6" rx="1.5" />
+                      <rect x="4" y="14" width="16" height="6" rx="1.5" />
+                    </svg>
+                    <span>Provider</span>
+                  </Button>
+                  <Button size="sm" variant="ghost" aria-label="Add modify node" title="Add modify" onClick={() => addNode("modify")} className="gap-1.5 px-2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 5V19" />
+                      <path d="M5 12H19" />
+                    </svg>
+                    <span>Modify</span>
+                  </Button>
+                  <Button size="sm" variant="ghost" aria-label="Add respond node" title="Add respond" onClick={() => addNode("respond")} className="gap-1.5 px-2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M21 15V6L9 2L3 6V18L9 22L21 18V15" />
+                      <path d="M3 6L9 10L15 6" />
+                      <path d="M9 10V22" />
+                    </svg>
+                    <span>Respond</span>
+                  </Button>
+                </div>
               </div>
               {graph.nodes.length === 0 ? (
                 <div className="pt-3">

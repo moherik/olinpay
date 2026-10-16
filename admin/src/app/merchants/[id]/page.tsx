@@ -16,6 +16,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/empty-state";
 import { CodeBlock } from "@/components/ui/code";
 import { DialogContent, DialogRoot } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   TabsContent,
   TabsList,
@@ -56,7 +57,7 @@ function MerchantDetailInner() {
   const { merchants, notify, environment } = useApp();
   const merchant = merchants.find((row) => row.id === params.id);
 
-  const [tabEnv, setTabEnv] = useState<Environment>(
+  const [tabEnv] = useState<Environment>(
     merchant?.environments[0] ?? "production",
   );
   const [configTarget, setConfigTarget] = useState<string | null>(null);
@@ -163,21 +164,14 @@ function MerchantDetailInner() {
         </TabsContent>
 
         <TabsContent value="providers">
-          <div className="mb-4">
-            <EnvTabs
-              environments={merchant.environments}
-              value={tabEnv}
-              onChange={setTabEnv}
-            />
-          </div>
           <Panel>
             <PanelHeader
               title="Assigned providers"
-              hint="A provider takes traffic for this merchant only after its credentials are saved."
+              hint="A provider takes traffic for this merchant only after its credentials are saved. Results are scoped to the active global environment."
             />
-            {assigned.filter((row) => row.environment === tabEnv).length === 0 ? (
+            {assigned.filter((row) => row.environment === environment).length === 0 ? (
               <EmptyState
-                title={`No providers on ${tabEnv}`}
+                title={`No providers on ${environment}`}
                 body="This merchant has no provider assigned in this environment. Save credentials for a provider to start routing payments to it."
                 action={
                   <Button asChild variant="secondary">
@@ -197,7 +191,7 @@ function MerchantDetailInner() {
                 </THead>
                 <TBody>
                   {assigned
-                    .filter((row) => row.environment === tabEnv)
+                    .filter((row) => row.environment === environment)
                     .sort((a, b) => a.priority - b.priority)
                     .map((row) => (
                       <TR key={`${row.provider}-${row.environment}`}>
@@ -226,24 +220,17 @@ function MerchantDetailInner() {
         </TabsContent>
 
         <TabsContent value="routing">
-          <div className="mb-4">
-            <EnvTabs
-              environments={merchant.environments}
-              value={tabEnv}
-              onChange={setTabEnv}
-            />
-          </div>
           <RoutingEditor
-            key={`${merchant.id}-${tabEnv}`}
+            key={`${merchant.id}-${environment}`}
             merchantName={merchant.name}
-            environment={tabEnv}
+            environment={environment}
             initial={assigned
-              .filter((row) => row.environment === tabEnv)
+              .filter((row) => row.environment === environment)
               .sort((a, b) => a.priority - b.priority)
               .map((row) => row.provider)}
             onSave={(order) =>
               notify(
-                `Routing saved for ${merchant.name} / ${tabEnv}. Priority order: ${order.join(", ")}.`,
+                `Routing saved for ${merchant.name} / ${environment}. Priority order: ${order.join(", ")}.`,
               )
             }
           />
@@ -277,31 +264,7 @@ function MerchantDetailInner() {
   );
 }
 
-function EnvTabs({
-  environments,
-  value,
-  onChange,
-}: {
-  environments: Environment[];
-  value: Environment;
-  onChange: (value: Environment) => void;
-}) {
-  if (environments.length < 2) return null;
-  return (
-    <TabsRoot
-      value={value}
-      onValueChange={(next) => onChange(next as Environment)}
-    >
-      <TabsList>
-        {environments.map((env) => (
-          <TabsTrigger key={env} value={env}>
-            {env}
-          </TabsTrigger>
-        ))}
-      </TabsList>
-    </TabsRoot>
-  );
-}
+
 
 function RoutingEditor({
   merchantName,
@@ -559,13 +522,17 @@ function KeysPanel({ merchantName }: { merchantName: string }) {
                 </TD>
                 <TD className="text-right">
                   {key.status === "active" ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setRevokeTarget(key)}
-                    >
-                      Revoke
-                    </Button>
+                    <ConfirmDialog
+                      trigger={
+                        <Button variant="danger" size="sm">
+                          Revoke
+                        </Button>
+                      }
+                      title="Revoke API key?"
+                      description={`Revoke "${key.label}" (${key.prefix}...) for ${merchantName}? This action cannot be undone.`}
+                      confirmLabel="Revoke"
+                      onConfirm={() => setRevokeTarget(key)}
+                    />
                   ) : (
                     <span className="text-[12px] text-muted">&mdash;</span>
                   )}
@@ -643,7 +610,7 @@ function KeysPanel({ merchantName }: { merchantName: string }) {
                 Keep key
               </Button>
               <Button
-                variant="primary"
+                variant="danger"
                 onClick={() => {
                   if (!revokeTarget) return;
                   setKeys((current) =>
@@ -657,7 +624,7 @@ function KeysPanel({ merchantName }: { merchantName: string }) {
                   setRevokeTarget(null);
                 }}
               >
-                Revoke key
+                Revoke
               </Button>
             </>
           }

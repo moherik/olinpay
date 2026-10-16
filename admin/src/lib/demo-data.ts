@@ -688,13 +688,17 @@ export const failedPerHour = [
   0, 0, 0, 0, 0, 0, 1, 1, 2, 3, 2, 4, 2, 1, 3, 2, 4, 2, 1, 3, 2, 1, 1, 0,
 ];
 
+/**
+ * Provider split of the same sample set as `statusBreakdown`, so the reliability
+ * table, the status rows and the hourly chart all reconcile on the overview.
+ */
 export const providerReliability = [
-  { provider: "midtrans-snap", payments: 1180, failed: 14 },
-  { provider: "xendit", payments: 940, failed: 22 },
-  { provider: "midtrans", payments: 610, failed: 9 },
-  { provider: "doku", payments: 380, failed: 17 },
-  { provider: "winpay", payments: 210, failed: 4 },
-  { provider: "mock", payments: 42, failed: 0 },
+  { provider: "midtrans-snap", payments: 772, failed: 16 },
+  { provider: "xendit", payments: 648, failed: 19 },
+  { provider: "midtrans", payments: 420, failed: 9 },
+  { provider: "doku", payments: 262, failed: 16 },
+  { provider: "winpay", payments: 145, failed: 6 },
+  { provider: "mock", payments: 29, failed: 0 },
 ];
 
 export const statusBreakdown: { status: Status; count: number }[] = [

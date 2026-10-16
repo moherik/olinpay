@@ -37,9 +37,9 @@ export function TabsTrigger({
     <Tabs.Trigger
       value={value}
       className={cn(
-        "group inline-flex items-center gap-1.5 rounded-[3px] px-2.5 py-1 text-[12px] font-medium text-secondary transition-colors",
+        "group inline-flex items-center gap-1.5 rounded-[3px] px-2.5 py-1 text-[12px] text-secondary transition-colors",
         "hover:text-ink",
-        "data-[state=active]:bg-surface data-[state=active]:text-ink data-[state=active]:shadow-[var(--shadow-raised)]",
+        "data-[state=active]:bg-surface data-[state=active]:font-medium data-[state=active]:text-ink data-[state=active]:shadow-[var(--shadow-raised)]",
       )}
     >
       {children}

@@ -257,8 +257,8 @@ export default function TransactionsPage() {
                   <TD>{row.merchant}</TD>
                   <TD className="font-mono text-[12.5px]">{row.provider}</TD>
                   <TD>
-                    <span className="text-ink">{row.method}</span>{" "}
-                    <span className="text-muted">{row.channel}</span>
+                    <span className="text-ink">{row.method}</span>
+                    {row.channel && <span className="text-muted"> / {row.channel}</span>}
                   </TD>
                   <TD className="num text-right">{formatIDR(row.amount)}</TD>
                   <TD>

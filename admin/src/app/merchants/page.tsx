@@ -13,6 +13,7 @@ import { Tag } from "@/components/ui/status-tag";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DialogContent, DialogRoot } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   DropdownContent,
   DropdownItem,
@@ -182,23 +183,38 @@ export default function MerchantsPage() {
                           Copy merchant id
                         </DropdownItem>
                         <DropdownSeparator />
-                        <DropdownItem
-                          tone={
-                            merchant.status === "active" ? "danger" : "default"
-                          }
-                          onSelect={() => {
-                            const next =
-                              merchant.status === "active"
-                                ? "suspended"
-                                : "active";
-                            setMerchantStatus(merchant.id, next);
-                            notify(`${merchant.name} is now ${next}.`);
-                          }}
-                        >
-                          {merchant.status === "active"
-                            ? "Suspend merchant"
-                            : "Restore merchant"}
-                        </DropdownItem>
+                        {merchant.status === "active" ? (
+                          <ConfirmDialog
+                            trigger={
+                              <DropdownItem tone="danger" onSelect={() => {}}>
+                                Suspend merchant
+                              </DropdownItem>
+                            }
+                            title="Suspend merchant?"
+                            description={`Suspend ${merchant.name}? This will block new payments for suspended environments until restored.`}
+                            confirmLabel="Suspend"
+                            onConfirm={() => {
+                              setMerchantStatus(merchant.id, "suspended");
+                              notify(`${merchant.name} is now suspended.`);
+                            }}
+                          />
+                        ) : (
+                          <ConfirmDialog
+                            trigger={
+                              <DropdownItem onSelect={() => {}}>
+                                Restore merchant
+                              </DropdownItem>
+                            }
+                            title="Restore merchant?"
+                            description={`Restore ${merchant.name}? This will allow payments again.`}
+                            confirmLabel="Restore"
+                            confirmVariant="primary"
+                            onConfirm={() => {
+                              setMerchantStatus(merchant.id, "active");
+                              notify(`${merchant.name} is now active.`);
+                            }}
+                          />
+                        )}
                       </DropdownContent>
                     </DropdownRoot>
                   </TD>

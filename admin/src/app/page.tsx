@@ -35,6 +35,7 @@ export default function OverviewPage() {
     statusBreakdown.map((row) => [row.status, row.count]),
   ) as Record<Status, number>;
   const total = statusBreakdown.reduce((sum, row) => sum + row.count, 0);
+  const chartedTotal = paymentsPerHour.reduce((sum, count) => sum + count, 0);
 
   const scopedDeliveries = deliveries.filter(
     (delivery) => delivery.environment === environment,
@@ -57,7 +58,7 @@ export default function OverviewPage() {
     <>
       <PageHeader
         title="Overview"
-        description="Platform activity for the environment selected above. Every figure on this screen is sample data for the design review, not platform data."
+        description="Sample data for the design review, not platform data. Delivery counts follow the environment selected above; payment counts cover the whole sample set and are not split by environment."
       />
 
       <div className="grid gap-4">
@@ -100,7 +101,10 @@ export default function OverviewPage() {
             <div className="grid gap-6 lg:grid-cols-[1fr_260px]">
               <HourlyBars paid={paymentsPerHour} failed={failedPerHour} />
               <DefList>
-                <DefRow label="Total created">
+                <DefRow label="Created, last 24h">
+                  <span className="num">{formatCount(chartedTotal)}</span>
+                </DefRow>
+                <DefRow label="Status breakdown, sample set">
                   <span className="num">{formatCount(total)}</span>
                 </DefRow>
                 {statusOrder.map((status) => (
@@ -143,8 +147,8 @@ export default function OverviewPage() {
 
           <Panel>
             <PanelHeader
-              title="Provider reliability, last 24h"
-              hint="Failed rate is failed payments divided by payments."
+              title="Provider reliability, sample set"
+              hint="Failed rate = failed payments / payments."
             />
             <table className="w-full border-collapse text-[13px]">
               <thead className="bg-surface-muted text-left">
@@ -167,7 +171,7 @@ export default function OverviewPage() {
                 {providerReliability.map((row) => (
                   <tr
                     key={row.provider}
-                    className="border-b border-border-subtle last:border-b-0"
+                    className="border-b border-border-subtle hover:bg-surface-muted/60 last:border-b-0"
                   >
                     <td className="px-4 py-2.5 font-mono text-[12.5px] text-ink">
                       {row.provider}
@@ -228,12 +232,9 @@ function AttentionRow({
         <span className="text-[13px] text-ink">{label}</span>
         <span className="text-[13px] text-muted">{value}</span>
       </div>
-      <Link
-        href={href}
-        className="text-[13px] font-medium text-accent underline-offset-2 hover:underline"
-      >
-        {action}
-      </Link>
+      <Button asChild variant="quiet" size="sm">
+        <Link href={href}>{action}</Link>
+      </Button>
     </div>
   );
 }
