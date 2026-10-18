@@ -6,13 +6,12 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "./globals.css";
 import { AppProvider } from "@/components/shell/app-context";
-import { AppShell } from "@/components/shell/app-shell";
 import { THEME_BOOTSTRAP_SCRIPT } from "@/lib/theme";
 
 export const metadata: Metadata = {
   title: "openpay.id admin console",
   description:
-    "Design review build for the openpay.id admin console. Sample data only.",
+    "Design review build for the openpay.id admin console. Connected to the openpay.id admin API.",
 };
 
 export default function RootLayout({
@@ -31,9 +30,7 @@ export default function RootLayout({
         />
       </head>
       <body>
-        <AppProvider>
-          <AppShell>{children}</AppShell>
-        </AppProvider>
+        <AppProvider>{children}</AppProvider>
       </body>
     </html>
   );

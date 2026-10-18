@@ -254,6 +254,16 @@ Known limitations: like Winpay, DOKU addresses status/delete by gateway-specific
 - Migration runner is `internal/platform/migrate`; initial schema is `migrations/0001_init.sql`.
 - Outbound webhook records are persisted before delivery; delivery ID remains stable for retries and is suitable for recipient idempotency.
 
+### Admin API and console (the control plane)
+
+- The admin API mounts under `/admin/api` on the API server (`internal/admin`): server-side sessions (`admin_sessions`, cookie `HttpOnly`/`SameSite=Lax`, 12h TTL), RBAC enforced per route with the hierarchy **owner > operator > tech**, and an append-only audit log.
+- Provider credentials are **global per adapter+environment** (`provider_configs` rows), not per merchant; a merchant's "provider assignment" is its routing entries. Saving a config builds the instance named `<adapter>.<env>` and hot-replaces it in the running registry; it also replaces the env-var-built instance for that environment at startup. Env-var-configured instances keep their bare adapter name (environment unknown to the catalog) and remain the no-DB fallback.
+- Provider secrets are write-only: `GET /providers` never returns them; `PUT config` with a blank secret keeps the stored value. Console responses normalize nil lists to `[]`, and `RoutingConfig` marshals a nil provider list as `[]` so client code cannot trip on `null`.
+- One-time secrets (merchant webhook secret on create, API key raw value, invited console user's initial password) are returned once in the response `meta` and stored hashed/irretrievable afterwards.
+- The console (`admin/`, Next.js) proxies `/admin/api/*` to the backend via a rewrite (`OPENPAY_BACKEND_URL`, default `http://localhost:8080`), so the session cookie stays same-origin; there is no demo data — unwired features (refunds, transaction event log, provider debug log) are flag-gated off through `/api/me` `flags` rather than rendered disabled.
+- The web-based routing graph prototype under `admin/src/components/routing/` is not wired to any endpoint; the engine accepts `priority` and `round_robin` only.
+- Admin schema is `migrations/0002_admin.sql` (`admin_users`, `admin_sessions`, `audit_log`, `provider_configs`, plus merchant routing storage changes). Bootstrap with `openpay create-admin` — no email/password-reset flow exists.
+
 Schema changes: add a new forward-only migration; update domain, repository interfaces, PostgreSQL scanners/writers, memory implementation, and tests. Consider data backfill/defaults, transaction boundaries, concurrency, and deployed migration state. Do not edit already-deployed migrations as if they had never run.
 
 ## 9. Security and financial correctness
@@ -268,6 +278,7 @@ Schema changes: add a new forward-only migration; update domain, repository inte
 - Respect context cancellation, HTTP timeouts, body limits; do not log credentials, secrets, private keys, or unnecessary PII.
 - Provider API calls are traced through the application logger: metadata (provider, method, URL, status, duration) at info, request/response headers and bodies at debug. Sensitive headers and JSON fields are redacted before logging and bodies are size-capped.
 - Be explicit about partial failure: gateway success with local persistence failure, timeout with unknown gateway outcome, and retries are core payment correctness concerns.
+- Console authentication is server-side: bcrypt password hashes, hashed session tokens, constant-time comparisons, login rate limiting; RBAC failures are 403, not silent no-ops. Never weaken the owner-only gates around provider credentials, users and API keys.
 
 ## 10. Build, run and test
 
@@ -293,7 +304,9 @@ Most tests are DB-free. `pkg/provider` tests cover the shared request/response t
 
 Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/QRIS/eWallet), Midtrans legacy Core API adapter (VA/QRIS/eWallet/retail outlet), Midtrans BI-SNAP adapter (VA/QRIS/eWallet), Xendit Payments API v3 adapter (VA/QRIS/eWallet/retail outlet/pay later/card), DOKU SNAP adapter (VA/QRIS/eWallet), provider API request/response tracing, provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
 
-Known/planned: persist Winpay/Midtrans BI-SNAP/DOKU gateway correlation values (the legacy Midtrans Core API adapter needs none); live sandbox verification; additional gateway adapters; first-class refunds; admin API; production queue/metrics/dashboards (provider-request tracing already ships); stronger recovery for provider success followed by DB failure. Do not claim roadmap items are implemented.
+Known/planned: persist Winpay/Midtrans BI-SNAP/DOKU gateway correlation values (the legacy Midtrans Core API adapter needs none); live sandbox verification; additional gateway adapters; first-class refunds; production queue/metrics/dashboards (provider-request tracing already ships); stronger recovery for provider success followed by DB failure; email flows for console accounts (password reset/invite). Do not claim roadmap items are implemented.
+
+Also implemented since the original scope: the admin API (`/admin/api` on the API server — server-side sessions with `openpay create-admin` bootstrap, RBAC owner > operator > tech enforced per route, provider credential CRUD stored in `provider_configs` with hot reload into the running registry, inbound reprocess, outbound retry, append-only audit log, `migrations/0002_admin.sql`) and the admin console (`admin/`, Next.js) wired to it over a same-origin proxy — every screen reads real data; unwired features (refunds, transaction event log, provider debug log) are flag-gated off rather than shown. One-time secrets (merchant webhook secret, API key, invited user password) are revealed once and stored hashed. The routing graph prototype in `admin/src/components/routing/` remains unwired (engine accepts `priority`/`round_robin` only).
 
 ## 12. Instructions for a future coding agent
 

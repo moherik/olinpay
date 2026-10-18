@@ -48,15 +48,15 @@ func (r *TransactionRepository) Create(ctx context.Context, tx *domain.Transacti
 
 	const q = `
 		INSERT INTO transactions (
-			id, merchant_id, reference_id, provider_name, provider_reference,
+			id, merchant_id, environment, reference_id, provider_name, provider_reference,
 			method, channel, amount, currency, status, payment_code, actions,
 			customer, items, description, metadata, failure_reason,
 			expires_at, paid_at, created_at, updated_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
 		)`
 	_, err = r.pool.Exec(ctx, q,
-		tx.ID, tx.MerchantID, tx.ReferenceID, tx.ProviderName, tx.ProviderReference,
+		tx.ID, tx.MerchantID, tx.Environment, tx.ReferenceID, tx.ProviderName, tx.ProviderReference,
 		tx.Method, tx.Channel, tx.Amount, tx.Currency, tx.Status, tx.PaymentCode, actions,
 		customer, items, tx.Description, metadata, tx.FailureReason,
 		tx.ExpiresAt, tx.PaidAt, tx.CreatedAt, tx.UpdatedAt,
@@ -152,11 +152,21 @@ func (r *TransactionRepository) List(ctx context.Context, f repository.Transacti
 	if f.MerchantID != "" {
 		add("merchant_id = $%d", f.MerchantID)
 	}
+	if f.Environment != "" {
+		add("environment = $%d", f.Environment)
+	}
 	if f.ReferenceID != "" {
 		add("reference_id = $%d", f.ReferenceID)
 	}
 	if f.ProviderName != "" {
 		add("provider_name = $%d", f.ProviderName)
+	}
+	if f.Search != "" {
+		needle := "%" + f.Search + "%"
+		args = append(args, needle, needle)
+		where = append(where, fmt.Sprintf(
+			"(reference_id ILIKE $%d OR provider_reference ILIKE $%d)",
+			len(args)-1, len(args)))
 	}
 	if f.Method != "" {
 		add("method = $%d", f.Method)

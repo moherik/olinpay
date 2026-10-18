@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Admin console
 
-## Getting Started
+The operator dashboard for openpay.id, built with Next.js. It talks to the Go
+backend's admin API (`/admin/api` mount on the API server) — there is no demo
+data: every number, list and credential on screen comes from the database.
 
-First, run the development server:
+## Run it
 
 ```bash
+# backend on :8080 (see the repository README quickstart)
+make run
+
+# console on :3000
+cd admin
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`next.config.ts` proxies `/admin/api/*` to the backend (`OPENPAY_BACKEND_URL`,
+default `http://localhost:8080`), so the session cookie is same-origin and
+HttpOnly — no CORS and no token in JavaScript.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Sign in
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Sessions are server-side; create the first console user with:
 
-## Learn More
+```bash
+openpay create-admin --email owner@example.com --name Owner --role owner
+```
 
-To learn more about Next.js, take a look at the following resources:
+The one-time password is printed once. Sign in at `/login`; a session lasts
+12 hours.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## What it covers
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Overview** — environment-scoped totals, hourly volume, delivery state and
+  provider reliability.
+- **Transactions** — server-side filtering (exact reference `q`, merchant,
+  status, provider), cancel (RBAC-gated), per-transaction timeline including
+  inbound gateway callbacks.
+- **Merchants** — create/suspend/restore, callback URL, per-environment
+  provider routing order, API keys (shown once at creation).
+- **Webhooks** — outbound deliveries with retry, inbound callbacks with
+  idempotent reprocess.
+- **Providers** — gateway adapters with DB-stored credentials per environment;
+  saving hot-reloads the instance into the running server.
+- **Users & access** — `owner` > `operator` > `tech`; the backend enforces the
+  role on every route and writes every console action to the audit log.
 
-## Deploy on Vercel
+Features the backend does not implement yet (refunds, transaction event log,
+provider debug logging) are flag-gated off rather than shown greyed out.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Notes
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- One-time secrets (merchant webhook secret, API key, invited user password)
+  are displayed once and then only stored hashed.
+- This version of Next.js uses Cache Components; the console is a
+  client-rendered app behind an auth gate, see the source layout under
+  `src/app/(console)/`.

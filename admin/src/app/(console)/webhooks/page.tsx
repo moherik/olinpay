@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "@/components/shell/page-header";
 import { useApp } from "@/components/shell/app-context";
+import { ApiFailed, ApiLoading } from "@/components/ui/api-state";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelHeader } from "@/components/ui/panel";
 import { Tag } from "@/components/ui/status-tag";
@@ -17,11 +18,18 @@ import {
   TabsRoot,
   TabsTrigger,
 } from "@/components/ui/tabs";
+import type { Delivery } from "@/lib/demo-data";
 import {
-  deliveries as seedDeliveries,
-  inboundEvents as seedInbound,
-  type Delivery,
-} from "@/lib/demo-data";
+  apiGet,
+  apiMutate,
+  ApiError,
+  mapDelivery,
+  mapInbound,
+  merchantName,
+  type RawDelivery,
+  type RawInbound,
+  type RawTransaction,
+} from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 
 const deliveryTone = {
@@ -31,40 +39,133 @@ const deliveryTone = {
 } as const;
 
 export default function WebhooksPage() {
-  const { environment, notify, actor } = useApp();
-  const [rows, setRows] = useState<Delivery[]>(seedDeliveries);
+  const { environment, notify, merchants } = useApp();
+  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
+  const [inbound, setInbound] = useState<RawInbound[]>([]);
+  const [deliveryCount, setDeliveryCount] = useState(0);
+
+  const [loadingOut, setLoadingOut] = useState(true);
+  const [loadingIn, setLoadingIn] = useState(true);
+  const [errorOut, setErrorOut] = useState<string | null>(null);
+  const [errorIn, setErrorIn] = useState<string | null>(null);
+
   const [retrying, setRetrying] = useState<string | null>(null);
   const [payloadTarget, setPayloadTarget] = useState<Delivery | null>(null);
+  const [reprocessing, setReprocessing] = useState(false);
   const [reprocessTarget, setReprocessTarget] = useState<string | null>(null);
 
-  const scoped = rows.filter((row) => row.environment === environment);
-  const inbound = seedInbound.filter((row) => row.environment === environment);
-  const failedCount = scoped.filter((row) => row.status === "failed").length;
+  const loadOutbound = useCallback(async () => {
+    setLoadingOut(true);
+    setErrorOut(null);
+    try {
+      const { data, meta } = await apiGet<RawDelivery[]>("/deliveries", {
+        env: environment,
+        limit: 100,
+      });
+      setDeliveries(data.map(mapDelivery));
+      setDeliveryCount(Number(meta.count ?? data.length));
+    } catch (cause) {
+      setErrorOut(
+        cause instanceof ApiError
+          ? cause.message
+          : "Cannot load webhook deliveries.",
+      );
+    } finally {
+      setLoadingOut(false);
+    }
+  }, [environment]);
 
-  function retry(id: string) {
-    const row = rows.find((entry) => entry.id === id);
-    if (!row) return;
-    setRetrying(id);
-    setTimeout(() => {
-      setRows((current) =>
+  const loadInbound = useCallback(async () => {
+    setLoadingIn(true);
+    setErrorIn(null);
+    try {
+      const { data } = await apiGet<RawInbound[]>("/inbound", {
+        env: environment,
+        limit: 100,
+      });
+      setInbound(data);
+    } catch (cause) {
+      setErrorIn(
+        cause instanceof ApiError
+          ? cause.message
+          : "Cannot load inbound callbacks.",
+      );
+    } finally {
+      setLoadingIn(false);
+    }
+  }, [environment]);
+
+  useEffect(() => {
+    // Deferred a tick so the loader's state updates do not run during the
+    // effect's commit.
+    const outbound = setTimeout(() => void loadOutbound(), 0);
+    const inbound = setTimeout(() => void loadInbound(), 0);
+    return () => {
+      clearTimeout(outbound);
+      clearTimeout(inbound);
+    };
+  }, [loadOutbound, loadInbound]);
+
+  const failedCount = deliveries.filter((row) => row.status === "failed").length;
+  const inboundRows = inbound.map((row) => mapInbound(row, environment));
+
+  async function retry(row: Delivery) {
+    setRetrying(row.id);
+    try {
+      const { data } = await apiMutate<RawDelivery>(
+        "POST",
+        `/deliveries/${row.id}/retry`,
+      );
+      setDeliveries((current) =>
         current.map((entry) =>
-          entry.id === id
-            ? {
-                ...entry,
-                status: "pending",
-                attempts: 0,
-                lastError: undefined,
-                age: "just now",
-              }
-            : entry,
+          entry.id === row.id ? mapDelivery(data) : entry,
         ),
       );
-      setRetrying(null);
       notify(
-        `Requeued ${row.event} to ${row.merchant}. The dispatcher will retry with backoff.`,
+        `Requeued ${row.event} to ${merchantName(row.merchant, merchants)}. The dispatcher will retry with backoff.`,
       );
-    }, 700);
+    } catch (cause) {
+      notify(
+        cause instanceof ApiError
+          ? `Retry failed: ${cause.message}`
+          : "Retry failed.",
+      );
+    } finally {
+      setRetrying(null);
+    }
   }
+
+  async function reprocess(id: string) {
+    setReprocessing(true);
+    try {
+      const { data } = await apiMutate<{
+        event: RawInbound;
+        transaction?: RawTransaction;
+      }>("POST", `/inbound/${id}/reprocess`);
+      if (data.transaction) {
+        notify(
+          `Reprocess applied: ${data.transaction.reference_id} is now ${data.transaction.status}. Matching on reference keeps this safe to run twice.`,
+        );
+      } else {
+        notify("Reprocess complete. No transaction was correlated.");
+      }
+      void loadInbound();
+      void loadOutbound();
+    } catch (cause) {
+      notify(
+        cause instanceof ApiError
+          ? `Reprocess failed: ${cause.message}`
+          : "Reprocess failed.",
+      );
+    } finally {
+      setReprocessing(false);
+      setReprocessTarget(null);
+    }
+  }
+
+  const reprocessCandidate = inboundRows.find(
+    (row) => row.id === reprocessTarget,
+  );
 
   return (
     <>
@@ -76,10 +177,10 @@ export default function WebhooksPage() {
       <TabsRoot defaultValue="outbound">
         <div className="mb-4">
           <TabsList>
-            <TabsTrigger value="outbound" count={scoped.length}>
+            <TabsTrigger value="outbound" count={deliveryCount}>
               Outbound deliveries
             </TabsTrigger>
-            <TabsTrigger value="inbound" count={inbound.length}>
+            <TabsTrigger value="inbound" count={inboundRows.length}>
               Inbound callbacks
             </TabsTrigger>
           </TabsList>
@@ -95,7 +196,15 @@ export default function WebhooksPage() {
                   : "No delivery has exhausted its attempts."
               }
             />
-            {scoped.length === 0 ? (
+            {errorOut && deliveries.length === 0 ? (
+              <ApiFailed
+                title="Deliveries unavailable"
+                error={errorOut}
+                onRetry={() => void loadOutbound()}
+              />
+            ) : loadingOut && deliveries.length === 0 ? (
+              <ApiLoading label="Loading deliveries…" />
+            ) : deliveries.length === 0 ? (
               <EmptyState
                 title="No deliveries in this environment"
                 body="The platform has not queued an outbound delivery here yet. Deliveries appear once a payment changes state."
@@ -115,10 +224,10 @@ export default function WebhooksPage() {
                   </TR>
                 </THead>
                 <TBody>
-                  {scoped.map((row) => (
+                  {deliveries.map((row) => (
                     <TR key={row.id}>
                       <TD className="font-mono text-[12.5px]">{row.event}</TD>
-                      <TD>{row.merchant}</TD>
+                      <TD>{merchantName(row.merchant, merchants)}</TD>
                       <TD
                         className="max-w-[280px] truncate font-mono text-[12px] text-secondary"
                         title={row.url}
@@ -146,7 +255,7 @@ export default function WebhooksPage() {
                           >
                             Payload
                           </Button>
-                          {row.status === "failed" ? (
+                          {row.status !== "pending" ? (
                             <ConfirmDialog
                               trigger={
                                 <Button
@@ -158,17 +267,17 @@ export default function WebhooksPage() {
                                 </Button>
                               }
                               title="Retry webhook delivery?"
-                              description={`Retry delivery of ${row.event} to ${row.merchant}? This will requeue with backoff.`}
+                              description={`Retry delivery of ${row.event} to ${merchantName(row.merchant, merchants)}? This will requeue with backoff.`}
                               confirmLabel="Retry"
                               confirmVariant="primary"
-                              onConfirm={() => retry(row.id)}
+                              onConfirm={() => void retry(row)}
                             />
                           ) : (
                             <Button
                               variant="ghost"
                               size="sm"
                               disabled
-                              title="Only a failed delivery needs a retry."
+                              title="The dispatcher is still working on this delivery."
                             >
                               Retry
                             </Button>
@@ -189,7 +298,15 @@ export default function WebhooksPage() {
               title="Inbound callbacks"
               hint="Callbacks the platform received from gateways. A rejected signature means the callback was not applied."
             />
-            {inbound.length === 0 ? (
+            {errorIn && inboundRows.length === 0 ? (
+              <ApiFailed
+                title="Callbacks unavailable"
+                error={errorIn}
+                onRetry={() => void loadInbound()}
+              />
+            ) : loadingIn && inboundRows.length === 0 ? (
+              <ApiLoading label="Loading callbacks…" />
+            ) : inboundRows.length === 0 ? (
               <EmptyState
                 title="No callbacks in this environment"
                 body="No gateway has called back here yet. Callbacks appear when a gateway reports a payment state change."
@@ -209,11 +326,11 @@ export default function WebhooksPage() {
                   </TR>
                 </THead>
                 <TBody>
-                  {inbound.map((row) => (
+                  {inboundRows.map((row) => (
                     <TR key={row.id}>
                       <TD className="font-mono text-[12.5px]">{row.provider}</TD>
-                      <TD className="font-mono text-[12.5px]">{row.event}</TD>
-                      <TD className="font-mono text-[12.5px]">{row.reference}</TD>
+                      <TD className="font-mono text-[12.5px]">{row.event || "\u2014"}</TD>
+                      <TD className="font-mono text-[12.5px]">{row.reference || "\u2014"}</TD>
                       <TD>
                         <Tag tone={row.signatureValid ? "ok" : "danger"}>
                           {row.signatureValid ? "valid" : "invalid"}
@@ -228,10 +345,14 @@ export default function WebhooksPage() {
                         {formatDateTime(row.receivedAt)}
                       </TD>
                       <TD className="max-w-[280px] text-secondary">
-                        {row.note ?? "\u2014"}
+                        {row.signatureValid && !row.parsed ? null : row.applied ? (
+                          "Applied"
+                        ) : (
+                          (row.note ?? "\u2014")
+                        )}
                       </TD>
                       <TD className="text-right">
-                        {row.signatureValid && !row.parsed ? (
+                        {row.signatureValid && row.parsed && !row.applied ? (
                           <ConfirmDialog
                             trigger={
                               <Button variant="secondary" size="sm">
@@ -242,11 +363,12 @@ export default function WebhooksPage() {
                             description="The signature is valid, so the payload is trusted. The platform will look up the payment and apply the state it reports."
                             confirmLabel="Reprocess"
                             confirmVariant="primary"
+                            disabled={reprocessing}
                             onConfirm={() => setReprocessTarget(row.id)}
                           />
                         ) : (
                           <span className="text-[12px] text-muted">
-                            {row.signatureValid ? "Applied" : "Rejected"}
+                            {row.signatureValid && row.parsed ? "Applied" : "Rejected"}
                           </span>
                         )}
                       </TD>
@@ -269,27 +391,29 @@ export default function WebhooksPage() {
           title={`${payloadTarget?.event ?? "Delivery"} payload`}
           description={
             payloadTarget
-              ? `Delivered to ${payloadTarget.url} for ${payloadTarget.merchant}.`
+              ? `Delivered to ${payloadTarget.url} for ${merchantName(payloadTarget.merchant, merchants)}.`
               : undefined
           }
         >
           {payloadTarget ? (
             <CodeBlock
               label="delivery.json"
-              code={JSON.stringify(
-                {
-                  id: payloadTarget.id,
-                  event: payloadTarget.event,
-                  environment: payloadTarget.environment,
-                  merchant: payloadTarget.merchant,
-                  status: payloadTarget.status,
-                  attempts: payloadTarget.attempts,
-                  last_error: payloadTarget.lastError ?? null,
-                  updated_at: payloadTarget.updatedAt,
-                },
-                null,
-                2,
-              )}
+              code={
+                payloadTarget.payload ||
+                JSON.stringify(
+                  {
+                    id: payloadTarget.id,
+                    event: payloadTarget.event,
+                    environment: payloadTarget.environment,
+                    status: payloadTarget.status,
+                    attempts: payloadTarget.attempts,
+                    last_error: payloadTarget.lastError ?? null,
+                    updated_at: payloadTarget.updatedAt,
+                  },
+                  null,
+                  2,
+                )
+              }
             />
           ) : null}
         </DialogContent>
@@ -300,31 +424,36 @@ export default function WebhooksPage() {
         onOpenChange={(open) => {
           if (!open) setReprocessTarget(null);
         }}
-        >
+      >
         <DialogContent
           title="Reprocess this callback?"
           description="The signature is valid, so the payload is trusted. The platform will look up the payment and apply the state it reports."
           footer={
             <>
-              <Button variant="secondary" onClick={() => setReprocessTarget(null)}>
+              <Button
+                variant="secondary"
+                onClick={() => setReprocessTarget(null)}
+              >
                 Cancel
               </Button>
               <Button
                 variant="primary"
+                disabled={reprocessing}
                 onClick={() => {
-                  notify(
-                    `Reprocess queued by ${actor}. Matching by reference keeps this safe to run twice.`,
-                  );
-                  setReprocessTarget(null);
+                  if (reprocessTarget) {
+                    void reprocess(reprocessTarget);
+                  }
                 }}
               >
-                Reprocess
+                {reprocessing ? "Reprocessing…" : "Reprocess"}
               </Button>
             </>
           }
         >
           <p className="text-[13px] text-muted">
-            Reprocessing is matched on the payment reference; running twice is safe in this demo.
+            {reprocessCandidate?.reference
+              ? `Matched on reference ${reprocessCandidate.reference}; running twice is safe — matching keeps this idempotent.`
+              : "Matching runs on the payment reference."}
           </p>
         </DialogContent>
       </DialogRoot>

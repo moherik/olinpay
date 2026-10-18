@@ -92,7 +92,10 @@ func (e *Engine) List(ctx context.Context, f repository.TransactionFilter) ([]*d
 
 // CreatePaymentCommand is the input to [Engine.CreatePayment].
 type CreatePaymentCommand struct {
-	MerchantID  string
+	MerchantID string
+	// Environment is the isolation level the payment belongs to (sandbox or
+	// production). It is decided by the API key used, never by the request.
+	Environment string
 	ReferenceID string
 	Amount      provider.Amount
 	Currency    provider.Currency
@@ -119,6 +122,9 @@ func (c CreatePaymentCommand) validate() error {
 	}
 	if c.Amount <= 0 {
 		return domain.Invalid("amount", "must be greater than zero")
+	}
+	if c.Environment != "" && !domain.EnvironmentValid(c.Environment) {
+		return domain.Invalid("environment", fmt.Sprintf("%q is not a supported environment", c.Environment))
 	}
 	if !c.Method.IsValid() {
 		return domain.Invalid("method", fmt.Sprintf("%q is not a supported payment method", c.Method))
@@ -256,6 +262,7 @@ func (e *Engine) buildTransaction(merchant *domain.Merchant, cmd CreatePaymentCo
 	tx := &domain.Transaction{
 		ID:                e.newID(),
 		MerchantID:        merchant.ID,
+		Environment:       cmd.Environment,
 		ReferenceID:       cmd.ReferenceID,
 		ProviderName:      providerName,
 		ProviderReference: resp.ProviderReference,

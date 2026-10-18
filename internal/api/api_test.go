@@ -60,7 +60,7 @@ func setup(t *testing.T) *fixture {
 		Logger:       quiet,
 	})
 
-	srv := httptest.NewServer(api.NewServer(engine, store.Merchants(), "", quiet).Router())
+	srv := httptest.NewServer(api.NewServer(engine, store.Merchants(), store.APIKeys(), "", quiet).Router())
 	t.Cleanup(srv.Close)
 	return &fixture{server: srv, store: store}
 }

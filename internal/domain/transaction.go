@@ -16,6 +16,7 @@ import (
 type Transaction struct {
 	ID                string                   `json:"id"`
 	MerchantID        string                   `json:"merchant_id"`
+	Environment       string                   `json:"environment"`
 	ReferenceID       string                   `json:"reference_id"`
 	ProviderName      string                   `json:"provider"`
 	ProviderReference string                   `json:"provider_reference,omitempty"`

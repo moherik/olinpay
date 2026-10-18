@@ -126,6 +126,39 @@ func (r *Registry) Build(name string, cfg Config) (Provider, error) {
 	return p, nil
 }
 
+// BuildAs instantiates the factory of adapterName and stores it under
+// instanceName. The admin console uses it to run one adapter under several
+// instances (e.g. "xendit" for production and "xendit.sandbox" for sandbox
+// credentials) and to hot-reload credentials without a restart.
+func (r *Registry) BuildAs(instanceName, adapterName string, cfg Config) (Provider, error) {
+	adapterName = normalizeName(adapterName)
+	r.mu.RLock()
+	f, ok := r.factories[adapterName]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("provider: no factory registered for %q", adapterName)
+	}
+	p, err := f(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("provider: building %q: %w", adapterName, err)
+	}
+	if p == nil {
+		return nil, fmt.Errorf("provider: factory for %q returned nil", adapterName)
+	}
+	r.mu.Lock()
+	r.instances[normalizeName(instanceName)] = p
+	r.mu.Unlock()
+	return p, nil
+}
+
+// Remove drops the built instance under name, so a retired provider stops
+// receiving traffic immediately.
+func (r *Registry) Remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.instances, normalizeName(name))
+}
+
 // Get returns the built instance for name.
 func (r *Registry) Get(name string) (Provider, bool) {
 	r.mu.RLock()

@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // MerchantStatus is the lifecycle state of a merchant account.
 type MerchantStatus string
@@ -48,6 +51,18 @@ type RoutingConfig struct {
 	Strategy string `json:"strategy"`
 	// Providers is the ordered candidate list. Order is meaningful.
 	Providers []RoutingProvider `json:"providers"`
+}
+
+// MarshalJSON emits an empty provider list as [] so console consumers never
+// see a null list from a freshly created merchant (JSON round-trip in
+// JavaScript treats the two differently).
+func (c RoutingConfig) MarshalJSON() ([]byte, error) {
+	type plain RoutingConfig
+	p := plain(c)
+	if p.Providers == nil {
+		p.Providers = []RoutingProvider{}
+	}
+	return json.Marshal(p)
 }
 
 // RoutingProvider is a single provider entry in a routing configuration.

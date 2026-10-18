@@ -36,6 +36,7 @@ func (s *Server) createPayment(w http.ResponseWriter, r *http.Request) {
 
 	cmd := core.CreatePaymentCommand{
 		MerchantID:   merchant.ID,
+		Environment:  environmentFromContext(r.Context()),
 		ReferenceID:  body.ReferenceID,
 		Amount:       body.Amount,
 		Currency:     provider.Currency(strings.ToUpper(body.Currency)),

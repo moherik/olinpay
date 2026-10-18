@@ -184,7 +184,17 @@ const themeOptions: { value: ThemeMode; label: string }[] = [
 ];
 
 function AccountMenu() {
-  const { actor, notify, theme, setTheme } = useApp();
+  const { auth, signOut, notify, theme, setTheme } = useApp();
+  const user = auth.ready && auth.authenticated ? auth.user : null;
+  const initials =
+    user === null
+      ? "OP"
+      : (user.name || user.email)
+          .split(/[\s@.]+/)
+          .filter(Boolean)
+          .slice(0, 2)
+          .map((part) => part[0]?.toUpperCase())
+          .join("") || "OP";
   return (
     <DropdownRoot>
       <DropdownTrigger asChild>
@@ -193,10 +203,10 @@ function AccountMenu() {
             aria-hidden="true"
             className="flex h-6 w-6 items-center justify-center rounded-full bg-ink text-[11px] font-medium text-canvas"
           >
-            OP
+            {initials}
           </span>
           <span className="hidden text-[12px] text-secondary sm:inline">
-            {actor}
+            {user?.email}
           </span>
           <IconChevronDown size={14} />
         </Button>
@@ -204,8 +214,8 @@ function AccountMenu() {
       <DropdownContent>
         <DropdownLabel>Signed in as</DropdownLabel>
         <div className="px-2 pb-1.5">
-          <p className="text-[13px] text-ink">{actor}</p>
-          <p className="text-[12px] text-muted">role: operator</p>
+          <p className="text-[13px] text-ink">{user?.name || user?.email}</p>
+          <p className="text-[12px] text-muted">role: {user?.role}</p>
         </div>
         <DropdownSeparator />
         <DropdownLabel>Theme</DropdownLabel>
@@ -222,28 +232,33 @@ function AccountMenu() {
         <DropdownSeparator />
         <DropdownItem
           onSelect={() => {
-            void navigator.clipboard?.writeText(actor);
+            void navigator.clipboard?.writeText(user?.email ?? "");
             notify("Account email copied to clipboard.");
           }}
         >
           Copy account email
         </DropdownItem>
         <DropdownItem
-          onSelect={() =>
-            notify("Sign out is not wired in the demo build. No session exists.")
-          }
+          onSelect={() => {
+            void signOut();
+            notify("Signed out.");
+          }}
         >
-          Sign out (demo build)
+          Sign out
         </DropdownItem>
       </DropdownContent>
     </DropdownRoot>
   );
 }
 
-function DemoNotice() {
+function SessionTag() {
+  const { auth } = useApp();
+  const label =
+    auth.ready && auth.authenticated ? "Connected to openpay.id API" : null;
+  if (!label) return null;
   return (
     <span className="hidden items-center rounded-[3px] border border-border bg-surface-muted px-2 py-1 text-[11px] font-medium text-secondary md:inline-flex">
-      Demo build: sample data, no API connection
+      {label}
     </span>
   );
 }
@@ -279,7 +294,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         <div className="border-t border-border-subtle p-3">
           <p className="px-2.5 text-[11px] text-muted">
-            Design review build
+            Admin console
           </p>
         </div>
       </aside>
@@ -294,7 +309,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <MobileNav />
             </div>
             <div className="hidden lg:block">
-              <DemoNotice />
+              <SessionTag />
             </div>
             <div className="flex items-center gap-2">
               <EnvironmentSwitch />
@@ -304,7 +319,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         <main className="mx-auto max-w-[1320px] px-4 py-5 lg:px-6">
           <div className="mb-4 lg:hidden">
-            <DemoNotice />
+            <SessionTag />
           </div>
           {children}
         </main>

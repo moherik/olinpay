@@ -73,7 +73,7 @@ func setupWithProvider(t *testing.T, p provider.Provider) *fixture {
 		Logger:       quiet,
 	})
 
-	receiver := webhook.NewReceiver(registry, engine, quiet)
+	receiver := webhook.NewReceiver(registry, engine, store.Inbound(), quiet)
 	router := chi.NewRouter()
 	receiver.Mount(router)
 

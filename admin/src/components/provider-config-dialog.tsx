@@ -6,6 +6,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { SelectControl } from "@/components/ui/select";
 import { DialogContent, DialogRoot } from "@/components/ui/dialog";
+import { apiMutate, ApiError } from "@/lib/api";
 import type { Environment, Provider } from "@/lib/demo-data";
 
 type Props = {
@@ -13,33 +14,42 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   environment: Environment;
-  scopeLabel: string;
-  allowMerchantScope?: boolean;
-  allowEnvironmentSelect?: boolean;
+  /** Whether at least one secret is stored for this environment. */
+  configured: boolean;
+  /** Owner role required: the backend rejects everyone else. */
+  canManage: boolean;
   onSaved: (summary: string) => void;
+  onChanged: () => void;
 };
 
+/**
+ * Credentials are global per provider + environment (not per merchant): the
+ * platform aims one gateway account at each environment. Secret fields are
+ * write-only — the backend never echoes them, so a blank secret keeps the
+ * stored value.
+ */
 export function ProviderConfigDialog({
   provider,
   open,
   onOpenChange,
   environment,
-  scopeLabel,
-  allowMerchantScope = false,
-  allowEnvironmentSelect = false,
+  configured,
+  canManage,
   onSaved,
+  onChanged,
 }: Props) {
+  // Initial values are set on mount; the parent keys this component per
+  // provider, so a fresh mount always starts with fresh state.
+  const [env, setEnv] = useState<Environment>(environment);
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       provider.configFields.map((field) => [field.key, field.value ?? ""]),
     ),
   );
-  const [scope, setScope] = useState(allowMerchantScope ? "merchant" : "platform");
-  const [env, setEnv] = useState<Environment>(environment);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [validated, setValidated] = useState<string | null>(null);
-
-  const alreadyConfigured = provider.state === "configured";
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedbackTone, setFeedbackTone] = useState<"ok" | "danger">("ok");
 
   function setValue(key: string, value: string) {
     setValues((current) => ({ ...current, [key]: value }));
@@ -49,7 +59,7 @@ export function ProviderConfigDialog({
     const next: Record<string, string> = {};
     for (const field of provider.configFields) {
       const value = values[field.key]?.trim() ?? "";
-      const keptSecret = field.secret && alreadyConfigured && value === "";
+      const keptSecret = field.secret && configured && value === "";
       if (field.required && value === "" && !keptSecret) {
         next[field.key] = `${field.label} is required.`;
         continue;
@@ -62,6 +72,33 @@ export function ProviderConfigDialog({
     return Object.keys(next).length === 0;
   }
 
+  async function save() {
+    if (!canManage) return;
+    if (!validate()) return;
+    setBusy(true);
+    setFeedback(null);
+    try {
+      await apiMutate("PUT", `/providers/${provider.name}/config`, {
+        environment: env,
+        config: values,
+      });
+      onSaved(`${provider.label} credentials saved for ${env}.`);
+      onOpenChange(false);
+      onChanged();
+    } catch (cause) {
+      setFeedbackTone("danger");
+      setFeedback(
+        cause instanceof ApiError
+          ? `The adapter rejected this configuration: ${cause.message}`
+          : "Saving failed — the admin API is unreachable.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const alreadyConfigured = configured;
+
   return (
     <DialogRoot
       open={open}
@@ -69,96 +106,53 @@ export function ProviderConfigDialog({
         onOpenChange(next);
         if (!next) {
           setErrors({});
-          setValidated(null);
+          setFeedback(null);
         }
       }}
     >
       <DialogContent
         title={`Configure ${provider.label}`}
-        description={`${scopeLabel} / ${env}. Values are stored server side and never returned in full.`}
+        description={`Platform credentials for ${env}. The adapter validates them on save; secrets are never returned in full.`}
         footer={
           <>
             <Button variant="ghost" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button
-              variant="secondary"
-              onClick={() => {
-                if (validate()) {
-                  setValidated(
-                    "All required fields are present and URLs are well formed. Live credential checks run server side.",
-                  );
-                } else {
-                  setValidated(null);
-                }
-              }}
-            >
-              Validate fields
-            </Button>
-            <Button
               variant="primary"
-              onClick={() => {
-                if (!validate()) return;
-                onSaved(`${provider.label} credentials saved for ${scopeLabel} / ${env}.`);
-                onOpenChange(false);
-              }}
+              disabled={busy || !canManage}
+              onClick={() => void save()}
             >
-              Save credentials
+              {busy ? "Validating and saving…" : "Save credentials"}
             </Button>
           </>
         }
       >
         <div className="flex flex-col gap-4">
-          {allowMerchantScope ? (
-            <Field
-              label="Scope"
-              help="Platform defaults apply everywhere until a merchant overrides them."
-            >
-              <SelectControl
-                ariaLabel="Credential scope"
-                value={scope}
-                onValueChange={setScope}
-                options={[
-                  { value: "platform", label: "Platform default" },
-                  { value: "merchant", label: "Per merchant override" },
-                ]}
-                className="w-full"
-              />
-            </Field>
+          {!canManage ? (
+            <p className="text-[12px] text-pending">
+              Saving credentials requires the owner role.
+            </p>
           ) : null}
 
-          {allowMerchantScope && scope === "merchant" ? (
-            <Field label="Merchant" help="Overrides are stored against this merchant only.">
-              <SelectControl
-                ariaLabel="Merchant"
-                value="demo-a"
-                onValueChange={() => undefined}
-                options={[{ value: "demo-a", label: "Demo Merchant A" }]}
-                className="w-full"
-              />
-            </Field>
-          ) : null}
-
-          {allowEnvironmentSelect ? (
-            <Field
-              label="Environment"
-              help="Sandbox and production are separate credentials. A sandbox key cannot move money."
-            >
-              <SelectControl
-                ariaLabel="Credentials environment"
-                value={env}
-                onValueChange={(value) => setEnv(value as Environment)}
-                options={[
-                  { value: "sandbox", label: "Sandbox" },
-                  { value: "production", label: "Production" },
-                ]}
-                className="w-full"
-              />
-            </Field>
-          ) : null}
+          <Field
+            label="Environment"
+            help="Sandbox and production are separate credentials. A sandbox key cannot move money."
+          >
+            <SelectControl
+              ariaLabel="Credentials environment"
+              value={env}
+              onValueChange={(value) => setEnv(value as Environment)}
+              options={[
+                { value: "sandbox", label: "Sandbox" },
+                { value: "production", label: "Production" },
+              ]}
+              className="w-full"
+            />
+          </Field>
 
           {provider.configFields.map((field) => {
-            const keptSecret = field.secret && alreadyConfigured;
+            const keptSecret = field.secret && configured;
             return (
               <Field
                 key={field.key}
@@ -199,9 +193,20 @@ export function ProviderConfigDialog({
             );
           })}
 
-          {validated ? (
-            <p className="rounded-panel border border-border bg-surface-muted px-3 py-2 text-[12px] text-secondary">
-              {validated}
+          {alreadyConfigured ? (
+            <p className="text-[12px] text-muted">
+              Saved credentials stay stored until removed. Removing them from
+              this environment retires the live gateway instance.
+            </p>
+          ) : null}
+
+          {feedback ? (
+            <p
+              className={`rounded-panel border border-border bg-surface-muted px-3 py-2 text-[12px] ${
+                feedbackTone === "ok" ? "text-secondary" : "text-failed"
+              }`}
+            >
+              {feedback}
             </p>
           ) : null}
 

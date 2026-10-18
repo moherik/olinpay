@@ -56,6 +56,9 @@ export type Delivery = {
   lastError?: string;
   updatedAt: string;
   age: string;
+  /** Live-data additions (absent in sample rows). */
+  transactionId?: string;
+  payload?: string;
 };
 
 export type InboundEvent = {
@@ -69,6 +72,11 @@ export type InboundEvent = {
   receivedAt: string;
   age: string;
   note?: string;
+  /** Live-data additions. */
+  applied?: boolean;
+  transactionId?: string;
+  /** False when the callback could not be tied to an environment at intake. */
+  environmentKnown?: boolean;
 };
 
 export type Provider = {
@@ -80,6 +88,9 @@ export type Provider = {
   state: "active" | "configured" | "not_configured";
   environment: Environment;
   note?: string;
+  /** Live-data additions. */
+  summary?: string;
+  instance?: string;
   configFields: {
     key: string;
     label: string;
@@ -99,6 +110,8 @@ export type AdminUser = {
   role: "owner" | "operator" | "tech";
   status: "active" | "suspended";
   lastLoginAt: string;
+  /** Live-data addition. */
+  createdAt?: string;
 };
 
 export const NOW_ISO = "2026-10-15T09:30:00Z";
@@ -111,6 +124,8 @@ export type Merchant = {
   keys: number;
   transactions30d: number;
   createdAt: string;
+  /** Live-data addition. */
+  callbackUrl?: string;
 };
 
 export const merchants: Merchant[] = [

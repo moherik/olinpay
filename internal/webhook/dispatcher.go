@@ -108,6 +108,7 @@ func (d *Dispatcher) Notify(ctx context.Context, tx *domain.Transaction) error {
 		ID:            msg.ID,
 		TransactionID: tx.ID,
 		MerchantID:    tx.MerchantID,
+		Environment:   tx.Environment,
 		EventType:     msg.Event,
 		URL:           merchant.CallbackURL,
 		Payload:       payload,

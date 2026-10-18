@@ -23,6 +23,7 @@ type WebhookDelivery struct {
 	ID            string         `json:"id"`
 	TransactionID string         `json:"transaction_id"`
 	MerchantID    string         `json:"merchant_id"`
+	Environment   string         `json:"environment"`
 	EventType     string         `json:"event_type"`
 	URL           string         `json:"url"`
 	Payload       []byte         `json:"payload"`

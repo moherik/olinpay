@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,12 +29,12 @@ var _ repository.WebhookDeliveryRepository = (*WebhookRepository)(nil)
 func (r *WebhookRepository) Create(ctx context.Context, d *domain.WebhookDelivery) error {
 	const q = `
 		INSERT INTO webhook_deliveries (
-			id, transaction_id, merchant_id, event_type, url, payload, status,
+			id, transaction_id, merchant_id, environment, event_type, url, payload, status,
 			attempts, max_attempts, last_error, last_attempt_at, next_attempt_at,
 			created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
 	_, err := r.pool.Exec(ctx, q,
-		d.ID, d.TransactionID, d.MerchantID, d.EventType, d.URL, d.Payload, d.Status,
+		d.ID, d.TransactionID, d.MerchantID, d.Environment, d.EventType, d.URL, d.Payload, d.Status,
 		d.Attempts, d.MaxAttempts, d.LastError, d.LastAttemptAt, d.NextAttemptAt,
 		d.CreatedAt, d.UpdatedAt,
 	)
@@ -91,6 +92,52 @@ func (r *WebhookRepository) Due(ctx context.Context, now time.Time, limit int) (
 	rows, err := r.pool.Query(ctx, q, now, clampLimit(limit))
 	if err != nil {
 		return nil, fmt.Errorf("postgres: listing due webhook deliveries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*domain.WebhookDelivery
+	for rows.Next() {
+		d, err := scanDelivery(rows)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: scanning webhook deliveries: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: iterating webhook deliveries: %w", err)
+	}
+	return out, nil
+}
+
+// List implements repository.WebhookDeliveryRepository. It powers the admin
+// console's outbound deliveries tab.
+func (r *WebhookRepository) List(ctx context.Context, f repository.DeliveryFilter) ([]*domain.WebhookDelivery, error) {
+	var (
+		where []string
+		args  []any
+	)
+	if f.Environment != "" {
+		args = append(args, f.Environment)
+		where = append(where, fmt.Sprintf("environment = $%d", len(args)))
+	}
+	if f.Status != "" {
+		args = append(args, string(f.Status))
+		where = append(where, fmt.Sprintf("status = $%d", len(args)))
+	}
+
+	q := `SELECT ` + deliveryColumns + ` FROM webhook_deliveries`
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	q += " ORDER BY created_at DESC"
+	q += fmt.Sprintf(" LIMIT $%d", len(args)+1)
+	args = append(args, clampLimit(f.Limit))
+	q += fmt.Sprintf(" OFFSET $%d", len(args)+1)
+	args = append(args, max(f.Offset, 0))
+
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: listing webhook deliveries: %w", err)
 	}
 	defer rows.Close()
 

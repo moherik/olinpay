@@ -14,21 +14,27 @@ import (
 	"github.com/moherik/openpay.id/internal/repository"
 )
 
-// Server holds the API handlers' dependencies.
 type Server struct {
 	engine    *core.Engine
 	merchants repository.MerchantRepository
+	apiKeys   repository.APIKeyRepository
+	admin     http.Handler
 	pepper    string
 	log       *slog.Logger
 }
 
 // NewServer builds the API server.
-func NewServer(engine *core.Engine, merchants repository.MerchantRepository, pepper string, log *slog.Logger) *Server {
+func NewServer(engine *core.Engine, merchants repository.MerchantRepository, apiKeys repository.APIKeyRepository, pepper string, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{engine: engine, merchants: merchants, pepper: pepper, log: log}
+	return &Server{engine: engine, merchants: merchants, apiKeys: apiKeys, pepper: pepper, log: log}
 }
+
+// Admin mounts an optional admin console handler under /admin on the API
+// router. The handler is expected to bring its own session auth; when nil the
+// admin surface is simply absent.
+func (s *Server) MountAdmin(h http.Handler) { s.admin = h }
 
 // Router builds the chi router exposing the public API.
 func (s *Server) Router() http.Handler {
@@ -58,6 +64,12 @@ func (s *Server) Router() http.Handler {
 			r.Post("/{id}/cancel", s.cancelPayment)
 		})
 	})
+
+	// Admin console API, when wired. The handler carries its own auth
+	// middleware (session cookie based, separate from merchant API keys).
+	if s.admin != nil {
+		r.Mount("/admin", s.admin)
+	}
 
 	return r
 }

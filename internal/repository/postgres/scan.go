@@ -38,7 +38,7 @@ func decodeJSON(raw []byte, v any) error {
 	return json.Unmarshal(raw, v)
 }
 
-const transactionColumns = `id, merchant_id, reference_id, provider_name, provider_reference,
+const transactionColumns = `id, merchant_id, environment, reference_id, provider_name, provider_reference,
 	method, channel, amount, currency, status, payment_code, actions, customer, items,
 	description, metadata, failure_reason, expires_at, paid_at, created_at, updated_at`
 
@@ -51,7 +51,7 @@ func scanTransaction(s scannable) (*domain.Transaction, error) {
 		metadata []byte
 	)
 	err := s.Scan(
-		&tx.ID, &tx.MerchantID, &tx.ReferenceID, &tx.ProviderName, &tx.ProviderReference,
+		&tx.ID, &tx.MerchantID, &tx.Environment, &tx.ReferenceID, &tx.ProviderName, &tx.ProviderReference,
 		&tx.Method, &tx.Channel, &tx.Amount, &tx.Currency, &tx.Status, &tx.PaymentCode,
 		&actions, &customer, &items, &tx.Description, &metadata, &tx.FailureReason,
 		&tx.ExpiresAt, &tx.PaidAt, &tx.CreatedAt, &tx.UpdatedAt,
@@ -95,8 +95,9 @@ func scanMerchant(s scannable) (*domain.Merchant, error) {
 	return &m, nil
 }
 
-const deliveryColumns = `id, transaction_id, merchant_id, event_type, url, payload, status,
-	attempts, max_attempts, last_error, last_attempt_at, next_attempt_at, created_at, updated_at`
+const deliveryColumns = `id, transaction_id, merchant_id, environment, event_type, url, payload,
+	status, attempts, max_attempts, last_error, last_attempt_at, next_attempt_at, created_at,
+	updated_at`
 
 func scanDelivery(s scannable) (*domain.WebhookDelivery, error) {
 	var (
@@ -104,8 +105,8 @@ func scanDelivery(s scannable) (*domain.WebhookDelivery, error) {
 		payload []byte
 	)
 	err := s.Scan(
-		&d.ID, &d.TransactionID, &d.MerchantID, &d.EventType, &d.URL, &payload, &d.Status,
-		&d.Attempts, &d.MaxAttempts, &d.LastError, &d.LastAttemptAt, &d.NextAttemptAt,
+		&d.ID, &d.TransactionID, &d.MerchantID, &d.Environment, &d.EventType, &d.URL, &payload,
+		&d.Status, &d.Attempts, &d.MaxAttempts, &d.LastError, &d.LastAttemptAt, &d.NextAttemptAt,
 		&d.CreatedAt, &d.UpdatedAt,
 	)
 	if err != nil {

@@ -10,6 +10,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,7 +25,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"golang.org/x/crypto/bcrypt"
 
+	"github.com/moherik/openpay.id/internal/admin"
 	"github.com/moherik/openpay.id/internal/api"
 	"github.com/moherik/openpay.id/internal/config"
 	"github.com/moherik/openpay.id/internal/core"
@@ -31,6 +35,7 @@ import (
 	"github.com/moherik/openpay.id/internal/platform/id"
 	"github.com/moherik/openpay.id/internal/platform/logger"
 	"github.com/moherik/openpay.id/internal/platform/migrate"
+	"github.com/moherik/openpay.id/internal/repository"
 	"github.com/moherik/openpay.id/internal/repository/postgres"
 	"github.com/moherik/openpay.id/internal/webhook"
 	"github.com/moherik/openpay.id/pkg/provider"
@@ -68,6 +73,8 @@ func run(args []string) error {
 		return runMigrations()
 	case "seed":
 		return seed(args)
+	case "create-admin":
+		return createAdmin(args)
 	case "version", "-version", "--version":
 		fmt.Println(version)
 		return nil
@@ -84,10 +91,11 @@ func usage() {
 	fmt.Fprint(os.Stderr, `openpay.id - open source payment orchestration for Indonesia
 
 Usage:
-  openpay serve     Run the API interface and webhook engine servers
-  openpay migrate   Apply SQL migrations to the configured database
-  openpay seed      Create a merchant and print its API key
-  openpay version   Print the version
+  openpay serve        Run the API, admin console and webhook engine servers
+  openpay migrate      Apply SQL migrations to the configured database
+  openpay seed         Create a merchant and print its API key
+  openpay create-admin Create an admin console user (email, name, role)
+  openpay version      Print the version
 
 Configuration is read from the environment (see .env.example).
 `)
@@ -122,6 +130,18 @@ func serve() error {
 	txRepo := postgres.NewTransactionRepository(pool)
 	merchantRepo := postgres.NewMerchantRepository(pool)
 	deliveryRepo := postgres.NewWebhookRepository(pool)
+	adminUserRepo := postgres.NewAdminUserRepository(pool)
+	adminSessionRepo := postgres.NewAdminSessionRepository(pool)
+	auditRepo := postgres.NewAuditRepository(pool)
+	apiKeysRepo := postgres.NewAPIKeyRepository(pool)
+	inboundRepo := postgres.NewInboundEventRepository(pool)
+	providerCfgRepo := postgres.NewProviderConfigRepository(pool)
+	adminStats := postgres.NewAdminStore(pool)
+
+	// Provider credentials from the database are instantiated on top of any
+	// environment-configured providers. DB rows override env vars when they
+	// both target the same instance name.
+	buildProviderFromDB(providerCfgRepo, registry, log)
 
 	// Webhook engine (outbound) doubles as the core engine's notifier.
 	dispatcher := webhook.NewDispatcher(deliveryRepo, merchantRepo, cfg.Webhook, log)
@@ -135,9 +155,45 @@ func serve() error {
 		Logger:       log,
 	})
 
-	apiServer := api.NewServer(engine, merchantRepo, cfg.APIKeyPepper, log)
+	receiver := webhook.NewReceiver(registry, engine, inboundRepo, log)
+	receiver.SetEnvironmentResolver(providerEnvironments(providerCfgRepo, registry))
 
-	receiver := webhook.NewReceiver(registry, engine, log)
+	// Provider hot reload: the admin console saves credentials, this callback
+	// rebuilds the live instance and refreshes the receiver's environment map.
+	reloadProvider := func(adapter, env string) error {
+		if err := applyProviderConfig(providerCfgRepo, registry, adapter, env); err != nil {
+			return err
+		}
+		receiver.SetEnvironmentResolver(providerEnvironments(providerCfgRepo, registry))
+		return nil
+	}
+
+	adminServer := admin.New(admin.Deps{
+		Engine:             engine,
+		Registry:           registry,
+		AdminUsers:         adminUserRepo,
+		Sessions:           adminSessionRepo,
+		Audit:              auditRepo,
+		APIKeys:            apiKeysRepo,
+		Merchants:          merchantRepo,
+		Transactions:       txRepo,
+		Deliveries:         deliveryRepo,
+		Inbound:            inboundRepo,
+		ProviderCfgs:       providerCfgRepo,
+		Stats:              adminStats,
+		ReloadProvider:     reloadProvider,
+		FeatureFlags:       featureFlags,
+		WebhookMaxAttempts: cfg.Webhook.MaxAttempts,
+		Pepper:             cfg.APIKeyPepper,
+		Log:                log,
+	})
+
+	if n, err := adminUserRepo.Count(ctx); err == nil && n == 0 {
+		log.Warn("no console users exist; create the bootstrap admin with `openpay create-admin`")
+	}
+
+	apiServer := api.NewServer(engine, merchantRepo, apiKeysRepo, cfg.APIKeyPepper, log)
+	apiServer.MountAdmin(adminServer.Handler())
 	webhookRouter := chi.NewRouter()
 	webhookRouter.Use(middleware.RequestID)
 	webhookRouter.Use(middleware.RealIP)
@@ -210,6 +266,94 @@ func buildProviders(cfg *config.Config, log *slog.Logger) (*provider.Registry, e
 		log.Info("provider registered", "name", name)
 	}
 	return registry, nil
+}
+
+// buildProviderFromDB instantiates every DB-stored credential set on top of
+// the environment-built instances. A DB row targeting the same instance name
+// as an env-configured provider overrides it (documented behavior: the console
+// is the newer control plane).
+func buildProviderFromDB(repo repository.ProviderConfigRepository, registry *provider.Registry, log *slog.Logger) {
+	rows, err := repo.List(context.Background())
+	if err != nil {
+		log.Warn("provider credential store unavailable; skipping DB providers", "error", err.Error())
+		return
+	}
+	for _, row := range rows {
+		if err := applyProviderConfig(repo, registry, row.Provider, row.Environment); err != nil {
+			log.Error("provider instance failed to build from stored credentials",
+				"provider", row.Provider, "environment", row.Environment, "error", err.Error())
+			continue
+		}
+		log.Info("provider registered from stored credentials",
+			"name", domain.InstanceName(row.Provider, row.Environment), "environment", row.Environment)
+	}
+}
+
+// applyProviderConfig builds (or rebuilds) one provider instance from its
+// stored credential row. A missing row retires the instance unless it is
+// env-configured under the same name.
+func applyProviderConfig(repo repository.ProviderConfigRepository, registry *provider.Registry, adapter, env string) error {
+	row, err := repo.Get(context.Background(), adapter, env)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			// Credentials were removed. Remove the DB-built instance; an
+			// env-built instance of the same name is left untouched only if
+			// the adapter appears in OPENPAY_PROVIDERS, which we cannot see
+			// here — removal is the safe default, credentials can be saved
+			// again.
+			registry.Remove(domain.InstanceName(adapter, env))
+			return nil
+		}
+		return err
+	}
+	if _, err := registry.BuildAs(domain.InstanceName(adapter, env), adapter, provider.Config(row.Config)); err != nil {
+		return fmt.Errorf("building %q (%s): %w", adapter, env, err)
+	}
+	return nil
+}
+
+// providerEnvironments resolves the environment each provider instance aims
+// at, for tagging inbound callbacks that fail to correlate with a
+// transaction. Registry-built (env-var) instances resolve to "" — unknown —
+// which the console always lists.
+func providerEnvironments(repo repository.ProviderConfigRepository, registry *provider.Registry) func(string) string {
+	envByInstance := map[string]string{}
+	for _, row := range fetchProviderConfigs(repo) {
+		envByInstance[domain.InstanceName(row.Provider, row.Environment)] = row.Environment
+	}
+	return func(instance string) string { return envByInstance[instance] }
+}
+
+func fetchProviderConfigs(repo repository.ProviderConfigRepository) []*domain.ProviderConfig {
+	rows, err := repo.List(context.Background())
+	if err != nil {
+		return nil
+	}
+	return rows
+}
+
+// featureFlags reports which console capabilities this build honestly backs.
+// Anything absent is rendered disabled by the dashboard instead of
+// interacting with data that does not exist.
+func featureFlags() map[string]bool {
+	return map[string]bool{
+		// Live, engine-backed capabilities.
+		"transactions":      true,
+		"cancel":            true,
+		"webhook_retry":     true,
+		"inbound_reprocess": true,
+		"merchants":         true,
+		"routing":           true,
+		"api_keys":          true,
+		"users":             true,
+		"providers":         true,
+		"provider_config":   true,
+		"audit":             true,
+		// Gated: no backing flow in this build yet.
+		"refund":             false,
+		"transaction_events": false,
+		"provider_debug_log": false,
+	}
 }
 
 // --- migrate ---------------------------------------------------------------
@@ -309,6 +453,80 @@ func seed(args []string) error {
 	fmt.Printf("\n  Merchant ID      : %s\n  API key          : %s\n  Webhook secret   : %s\n\n",
 		merchant.ID, resolvedKey, resolvedSecret)
 	fmt.Println("  Store the API key and webhook secret now; they are not shown again.")
+	return nil
+}
+
+// --- create-admin -----------------------------------------------------------
+
+// createAdmin creates the console bootstrap user. No email infrastructure
+// exists in this build: a one-time password is generated (or supplied via a
+// flag) and printed once.
+func createAdmin(args []string) error {
+	fs := flag.NewFlagSet("create-admin", flag.ContinueOnError)
+	email := fs.String("email", "", "login email (required)")
+	name := fs.String("name", "", "display name")
+	role := fs.String("role", "owner", "owner, operator or tech")
+	password := fs.String("password", "", "initial password (generated when empty)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	email2 := strings.TrimSpace(*email)
+	if email2 == "" || !strings.Contains(email2, "@") {
+		return fmt.Errorf("a valid --email is required")
+	}
+	roleValue := domain.AdminRole(strings.TrimSpace(*role))
+	if !roleValue.Valid() {
+		return fmt.Errorf("--role must be owner, operator or tech")
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	log := logger.New(cfg.LogLevel, os.Stdout)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	resolved := strings.TrimSpace(*password)
+	if resolved == "" {
+		buf := make([]byte, 16)
+		if _, err := rand.Read(buf); err != nil {
+			return fmt.Errorf("generating password: %w", err)
+		}
+		resolved = base64.RawURLEncoding.EncodeToString(buf)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(resolved), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hashing password: %w", err)
+	}
+
+	now := time.Now()
+	user := &domain.AdminUser{
+		ID:           id.NewPrefixed("usr"),
+		Email:        email2,
+		Name:         strings.TrimSpace(*name),
+		PasswordHash: string(hash),
+		Role:         roleValue,
+		Status:       domain.AdminUserActive,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := postgres.NewAdminUserRepository(pool).Create(ctx, user); err != nil {
+		return fmt.Errorf("creating admin user: %w", err)
+	}
+
+	log.Info("admin user created", "email", user.Email, "role", user.Role)
+	fmt.Printf("\n  Email            : %s\n  Role             : %s\n  Password         : %s\n\n",
+		user.Email, user.Role, resolved)
+	fmt.Println("  Store the password now; it is not shown again. Sign in at /login on the dashboard.")
 	return nil
 }
 

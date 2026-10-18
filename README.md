@@ -41,6 +41,7 @@ orchestrator handle translation, routing, and callbacks.
 - [Quickstart](#quickstart)
 - [API reference](#api-reference)
 - [OpenAPI / Swagger](#openapi--swagger)
+- [Admin console](#admin-console)
 - [Adding a provider](#adding-a-provider)
 - [Routing](#routing)
 - [Webhooks to your system](#webhooks-to-your-system)
@@ -85,8 +86,9 @@ PJP → webhook engine (receiver) → provider engine (parse + verify)
 
 ```
 .
-├── cmd/openpay/            # entrypoint: serve | migrate | seed
+├── cmd/openpay/            # entrypoint: serve | migrate | seed | create-admin
 ├── internal/
+│   ├── admin/              # admin API: auth/sessions, RBAC, console endpoints
 │   ├── api/                # API interface (chi handlers, auth, error mapping)
 │   ├── config/             # environment configuration loader
 │   ├── core/               # core engine + routing strategies
@@ -96,6 +98,7 @@ PJP → webhook engine (receiver) → provider engine (parse + verify)
 │   │   └── postgres/       # pgx implementations + all SQL
 │   ├── testutil/memory/    # in-memory repos for tests
 │   └── webhook/            # webhook engine: receiver + dispatcher
+├── admin/                  # Next.js operator console (see admin/README.md)
 ├── migrations/             # SQL migrations (applied by `openpay migrate`)
 └── pkg/provider/           # PUBLIC contract every provider implements
     ├── mock/               # reference provider (in-memory gateway)
@@ -161,6 +164,26 @@ curl -sS -X POST http://localhost:8081/webhooks/mock \
 
 The transaction is now `paid`, and a signed `payment.paid` webhook has been
 queued for delivery to the merchant's callback URL.
+
+## Admin console
+
+An operator dashboard lives in [`admin/`](admin/README.md) (Next.js). It
+mounts nothing itself: the Go API server serves the admin API under
+`/admin/api`, and the console proxies to it so the session cookie stays
+same-origin and HttpOnly.
+
+```bash
+# console on :3000 — backend must be running
+cd admin && npm install && npm run dev
+# sign in with a bootstrap account:
+openpay create-admin --email owner@example.com --role owner
+```
+
+It covers transaction search and cancel, merchant lifecycle and routing,
+API keys, provider credentials (stored in PostgreSQL, hot-reloaded into the
+running server), inbound reprocessing, outbound retries, users and an
+append-only audit log — all gated by the `owner` > `operator` > `tech` role
+hierarchy the backend enforces per route.
 
 ## API reference
 
@@ -674,7 +697,14 @@ See [`.env.example`](.env.example) for the full list. The essentials:
 | `OPENPAY_API_KEY_PEPPER` | – | Secret mixed into API-key hashing |
 | `OPENPAY_WEBHOOK_MAX_ATTEMPTS` | `6` | Outbound delivery attempts |
 
-CLI: `openpay serve`, `openpay migrate`, `openpay seed`, `openpay version`.
+CLI: `openpay serve`, `openpay migrate`, `openpay seed`, `openpay create-admin`,
+`openpay version`.
+
+Provider credentials set through the console take priority over the
+`OPENPAY_PROVIDER_*` environment variables: a DB row for the same
+adapter/environment replaces the env-built instance at save time (and when the
+process restarts). Env-configured instances remain the fallback so a bare
+`OPENPAY_PROVIDERS=xendit` deployment keeps working as before.
 
 ### Provider API logging
 
@@ -703,8 +733,9 @@ make check       # fmt + vet + test
 Tests run without PostgreSQL by using the in-memory repositories in
 `internal/testutil/memory`. The suite covers the provider lifecycle and
 signature verification, routing strategies, the core engine (idempotency,
-webhook reconciliation, cancel), the API surface, and the inbound webhook
-engine.
+webhook reconciliation, cancel), the API surface, the inbound webhook engine,
+and the admin API (session lifecycle, RBAC per route, provider config
+save/delete with hot reload, audit writing).
 
 The provider suites also cover the shared request/response tracing transport in
 `pkg/provider` (metadata at info, redacted bodies at debug).
@@ -749,6 +780,12 @@ API** (VA, QRIS, eWallet) — each with its own callback signature verification.
 Also implemented: a complete **Xendit (Payments API v3)** adapter (VA, QRIS,
 eWallet, retail outlet, pay later, card) with callback token verification.
 
+Also implemented: the **admin API** (`/admin/api` on the API server: server-side
+sessions, RBAC, DB-backed provider credentials with hot reload, audit log) and
+the **admin console** (Next.js, `admin/`) wired to it — including a routing
+editor, one-time secret reveals for merchant webhook secrets / API keys /
+invited-user passwords, and flag-gated features.
+
 Deliberately left for later:
 
 - further concrete gateway adapters (Duitku, OY!, ...) —
@@ -759,10 +796,13 @@ Deliberately left for later:
   adapter needs no cache because it addresses by `order_id`;
 - refunds as a first-class operation (the pattern is the optional
   `SignatureVerifier`-style extension interface);
-- an admin API for merchants and routing configuration (today: `openpay seed`);
 - metrics/tracing, rate limiting, and a message-queue backend for the
   dispatcher;
-- amount-based / weighted / least-cost routing strategies.
+- amount-based / weighted / least-cost routing strategies;
+- forgot-password / email flows for console accounts (`create-admin` is the
+  only bootstrap path today);
+- the web-based routing graph prototype under `admin/src/components/routing/`
+  is not wired — the engine accepts `priority` and `round_robin` only.
 
 ## License
 

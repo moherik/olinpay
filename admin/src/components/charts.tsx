@@ -14,7 +14,9 @@ export function HourlyBars({
   height?: number;
 }) {
   const maxRaw = Math.max(...paid.map((value, index) => value + failed[index]));
-  const max = Math.ceil(maxRaw / 10) * 10;
+  // An all-zero series still needs a usable axis; without the fallback,
+  // bar heights divide by zero and the rects get NaN geometry.
+  const max = Math.max(Math.ceil(maxRaw / 10) * 10, 10);
   const slot = 100 / paid.length;
   const barWidth = slot * 0.6;
 
