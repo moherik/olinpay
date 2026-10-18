@@ -655,6 +655,44 @@ func TestMerchantLifecycleAndRouting(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("valid routing: status %d", status)
 	}
+
+	// Conditional rules are validated before they are stored: an impossible
+	// condition would silently never fire.
+	status, _ = f.doWith(t, cookie, "PUT", "/api/merchants/"+idLatency+"/routing", domain.RoutingConfig{
+		Strategy:  domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{
+			{Condition: domain.RoutingCondition{Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "abc"}, Providers: []string{"mock"}},
+		},
+	})
+	if status != 400 {
+		t.Fatalf("non-numeric amount condition: status %d", status)
+	}
+	status, _ = f.doWith(t, cookie, "PUT", "/api/merchants/"+idLatency+"/routing", domain.RoutingConfig{
+		Strategy:  domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{
+			{Condition: domain.RoutingCondition{Field: "metadata:acq", Operator: domain.ConditionOperatorEq, Value: "xendit"}, Providers: []string{"nowhere"}},
+		},
+	})
+	if status != 400 {
+		t.Fatalf("unregistered rule provider: status %d", status)
+	}
+	status, _ = f.doWith(t, cookie, "PUT", "/api/merchants/"+idLatency+"/routing", domain.RoutingConfig{
+		Strategy:  domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{
+			{
+				Condition: domain.RoutingCondition{
+					Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "10000",
+				},
+				Providers: []string{"mock"},
+			},
+		},
+	})
+	if status != 200 {
+		t.Fatalf("valid rules: status %d", status)
+	}
 }
 
 // --- users ------------------------------------------------------------------

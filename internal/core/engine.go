@@ -187,15 +187,30 @@ func (e *Engine) CreatePayment(ctx context.Context, cmd CreatePaymentCommand) (*
 	}
 
 	routeReq := &RouteRequest{
-		MerchantID: merchant.ID,
-		Method:     cmd.Method,
-		Channel:    cmd.Channel,
-		Amount:     cmd.Amount,
-		Currency:   cmd.currency(),
+		MerchantID:  merchant.ID,
+		Environment: cmd.Environment,
+		Method:      cmd.Method,
+		Channel:     cmd.Channel,
+		Amount:      cmd.Amount,
+		Currency:    cmd.currency(),
+		Metadata:    cmd.Metadata,
+		Description: cmd.Description,
 	}
-	candidates, err := e.candidates(merchant, cmd.ProviderName, routeReq)
+	decision, err := e.candidates(merchant, cmd.ProviderName, routeReq)
 	if err != nil {
 		return nil, err
+	}
+	candidates := decision.Candidates
+
+	// The transaction and the gateway request must carry exactly what routing
+	// decided to send, so enrichment/modifications land in both.
+	effectiveMetadata := decision.Metadata
+	if effectiveMetadata == nil {
+		effectiveMetadata = cmd.Metadata
+	}
+	effectiveDescription := decision.Description
+	if effectiveDescription == "" {
+		effectiveDescription = cmd.Description
 	}
 
 	provReq := &provider.CreatePaymentRequest{
@@ -206,17 +221,27 @@ func (e *Engine) CreatePayment(ctx context.Context, cmd CreatePaymentCommand) (*
 		Channel:     cmd.Channel,
 		Customer:    cmd.Customer,
 		Items:       cmd.Items,
-		Description: cmd.Description,
+		Description: effectiveDescription,
 		Expiry:      cmd.Expiry,
-		Metadata:    cmd.Metadata,
+		Metadata:    effectiveMetadata,
 	}
 
 	resp, chosen, err := e.attemptCreate(ctx, candidates, provReq)
 	if err != nil {
+		// A routing-level custom response answers instead of the provider
+		// failure when the merchant configured a fallback reject.
+		var rejected *domain.RejectedError
+		if !errors.As(err, &rejected) && merchant.Routing.Reject != nil {
+			return nil, &domain.RejectedError{
+				Status:  merchant.Routing.Reject.Status,
+				Code:    merchant.Routing.Reject.Code,
+				Message: merchant.Routing.Reject.Message,
+			}
+		}
 		return nil, err
 	}
 
-	tx := e.buildTransaction(merchant, cmd, chosen.Name(), resp)
+	tx := e.buildTransaction(merchant, cmd, chosen.Name(), resp, effectiveMetadata, effectiveDescription)
 	if err := e.txRepo.Create(ctx, tx); err != nil {
 		// A concurrent request may have won the idempotency race.
 		if errors.Is(err, domain.ErrConflict) {
@@ -257,7 +282,7 @@ func (e *Engine) attemptCreate(ctx context.Context, candidates []Candidate, req 
 	return nil, nil, fmt.Errorf("core: every provider failed for reference %s: %w", req.ReferenceID, errors.Join(failures...))
 }
 
-func (e *Engine) buildTransaction(merchant *domain.Merchant, cmd CreatePaymentCommand, providerName string, resp *provider.CreatePaymentResponse) *domain.Transaction {
+func (e *Engine) buildTransaction(merchant *domain.Merchant, cmd CreatePaymentCommand, providerName string, resp *provider.CreatePaymentResponse, metadata map[string]string, description string) *domain.Transaction {
 	now := e.now()
 	tx := &domain.Transaction{
 		ID:                e.newID(),
@@ -275,8 +300,8 @@ func (e *Engine) buildTransaction(merchant *domain.Merchant, cmd CreatePaymentCo
 		Actions:           resp.Actions,
 		Customer:          cmd.Customer,
 		Items:             cmd.Items,
-		Description:       cmd.Description,
-		Metadata:          cmd.Metadata,
+		Description:       description,
+		Metadata:          metadata,
 		ExpiresAt:         resp.ExpiresAt,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -504,9 +529,13 @@ func (e *Engine) lookup(ctx context.Context, merchantID, transactionID, referenc
 	}
 }
 
-func (e *Engine) candidates(merchant *domain.Merchant, forced string, req *RouteRequest) ([]Candidate, error) {
+func (e *Engine) candidates(merchant *domain.Merchant, forced string, req *RouteRequest) (*RouteDecision, error) {
 	if forced != "" {
-		return e.router.OrderForProvider(forced, req)
+		candidates, err := e.router.OrderForProvider(forced, req)
+		if err != nil {
+			return nil, err
+		}
+		return &RouteDecision{Candidates: candidates}, nil
 	}
-	return e.router.Order(merchant, req)
+	return e.router.Decide(merchant, req)
 }

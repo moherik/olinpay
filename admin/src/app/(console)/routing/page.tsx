@@ -11,7 +11,7 @@ import { Field } from "@/components/ui/field";
 import { Panel, PanelHeader } from "@/components/ui/panel";
 import { SelectControl } from "@/components/ui/select";
 import { Tag } from "@/components/ui/status-tag";
-import { PriorityEditor, type RoutingEntry } from "@/components/routing/priority-editor";
+import { RoutingStudio } from "@/components/routing/routing-studio";
 import type { Environment } from "@/lib/demo-data";
 import { apiGet, ApiError, type RawProviderEntry } from "@/lib/api";
 
@@ -22,16 +22,19 @@ type RawMerchantDetail = {
   status: "active" | "inactive" | "suspended";
   created_at: string;
   api_key_prefix: string;
-  routing: { strategy: string; providers: RoutingEntry[] };
+  routing: {
+    strategy: string;
+    providers: { name: string; enabled: boolean; priority: number }[];
+    rules?: { condition: { field: string; operator: string; value: string }; providers: string[] }[];
+  };
 };
 
 /**
- * One workspace to set provider priority for every merchant. The graph
- * prototype in components/routing/routing-studio is not wired here: the
- * engine understands priority and round-robin strategies only.
+ * One workspace per merchant/ecosystem: the visual failover-chain editor
+ * (entry -> provider nodes) that saves through the routing endpoint.
  */
 export default function RoutingPage() {
-  const { environment, merchants, merchantsReady, auth } = useApp();
+  const { environment, merchants, merchantsReady, auth, notify } = useApp();
   const [picked, setPicked] = useState("");
 
   // The effective selection is derived: an out-of-date or empty pick falls
@@ -45,7 +48,7 @@ export default function RoutingPage() {
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Routing"
-        description={`Provider priority per merchant, scoped to ${environment}. A payment starts at the first live provider and falls to the next on a hard decline.`}
+        description={`Visual failover chain per merchant, scoped to ${environment}. Payments flow entry → first live provider, then fall through the chain on a hard decline. Strategy selects fixed priority or rotating round-robin.`}
         actions={
           merchant ? (
             <Button asChild variant="ghost">
@@ -79,6 +82,7 @@ export default function RoutingPage() {
           environment={environment}
           canManage={auth.ready && auth.authenticated && auth.user.role !== "tech"}
           onMerchantChange={setPicked}
+          notify={notify}
         />
       )}
     </div>
@@ -91,12 +95,14 @@ function RoutingWorkspace({
   environment,
   canManage,
   onMerchantChange,
+  notify,
 }: {
   merchantId: string;
   merchant: { id: string; name: string; status: string } | null;
   environment: Environment;
   canManage: boolean;
   onMerchantChange: (value: string) => void;
+  notify: (message: string) => void;
 }) {
   const [detail, setDetail] = useState<RawMerchantDetail | null>(null);
   const [providers, setProviders] = useState<RawProviderEntry[]>([]);
@@ -164,21 +170,17 @@ function RoutingWorkspace({
             {detail.status}
           </Tag>
         </div>
-        <Tag tone="neutral">
-          {detail.routing.strategy === "round_robin"
-            ? "Round-robin strategy"
-            : "Priority strategy"}
-        </Tag>
       </div>
 
-      <PriorityEditor
+      <RoutingStudio
         merchantId={detail.id}
         merchantName={detail.name}
         environment={environment}
-        routing={detail.routing}
+        routing={{ ...detail.routing, rules: detail.routing.rules ?? [] }}
         providers={providers}
-        onChanged={() => void load()}
         canManage={canManage}
+        onChanged={() => void load()}
+        notify={notify}
       />
     </div>
   );

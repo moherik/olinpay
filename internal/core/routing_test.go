@@ -113,18 +113,20 @@ func TestRouterFiltersByCapability(t *testing.T) {
 		},
 	}
 
-	got, err := router.Order(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodQRIS})
+	dec, err := router.Decide(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodQRIS})
 	if err != nil {
 		t.Fatalf("Order: %v", err)
 	}
+	got := dec.Candidates
 	if len(got) != 1 || got[0].Provider.Name() != "qr" {
 		t.Errorf("qr request routed to %v, want [qr]", names(got))
 	}
 
-	got, err = router.Order(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodVirtualAccount})
+	dec, err = router.Decide(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodVirtualAccount})
 	if err != nil {
 		t.Fatalf("Order: %v", err)
 	}
+	got := dec.Candidates
 	if len(got) != 1 || got[0].Provider.Name() != "va" {
 		t.Errorf("va request routed to %v, want [va]", names(got))
 	}
@@ -138,10 +140,11 @@ func TestRouterFallsBackToAllProvidersWithoutConfig(t *testing.T) {
 	router := core.NewRouter(registry)
 	merchant := &domain.Merchant{ID: "m1"}
 
-	got, err := router.Order(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodQRIS})
+	dec, err := router.Decide(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodQRIS})
 	if err != nil {
 		t.Fatalf("Order: %v", err)
 	}
+	got := dec.Candidates
 	if len(got) != 2 {
 		t.Errorf("expected both providers as candidates, got %v", names(got))
 	}
@@ -161,11 +164,214 @@ func TestRouterReturnsNoRouteWhenNothingMatches(t *testing.T) {
 		},
 	}
 
-	_, err := router.Order(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodVirtualAccount})
+	_, err := router.Decide(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodVirtualAccount})
 	if err == nil {
 		t.Fatal("expected an error for an unsupported method")
 	}
 	if !errors.Is(err, domain.ErrNoRoute) {
+		t.Errorf("error = %v, want ErrNoRoute", err)
+	}
+}
+
+func TestRouterScopesCandidatesByEnvironment(t *testing.T) {
+	sandboxOnly := &stubProvider{name: "winpay.sandbox", caps: provider.Capabilities{SupportsInquiry: true}}
+	prodOnly := &stubProvider{name: "winpay.production", caps: provider.Capabilities{SupportsInquiry: true}}
+	legacy := &stubProvider{name: "mock", caps: provider.Capabilities{SupportsInquiry: true}}
+	registry := provider.NewRegistry()
+	registry.Add(sandboxOnly)
+	registry.Add(prodOnly)
+	registry.Add(legacy)
+
+	router := core.NewRouter(registry)
+
+	// No config: each environment only sees its own instances plus legacy ones.
+	merchant := &domain.Merchant{ID: "m1"}
+
+	dec, err := router.Decide(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodQRIS, Environment: domain.EnvironmentSandbox})
+	if err != nil {
+		t.Fatalf("Order sandbox: %v", err)
+	}
+	got := dec.Candidates
+	if len(got) != 2 || (got[0].Provider != sandboxOnly && got[1].Provider != sandboxOnly) || (got[0].Provider != legacy && got[1].Provider != legacy) {
+		t.Errorf("sandbox candidates = %v, want [winpay.sandbox mock]", names(got))
+	}
+
+	dec, err = router.Decide(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodQRIS, Environment: domain.EnvironmentProduction})
+	if err != nil {
+		t.Fatalf("Order production: %v", err)
+	}
+	got = dec.Candidates
+	if len(got) != 2 || (got[0].Provider != prodOnly && got[1].Provider != prodOnly) || (got[0].Provider != legacy && got[1].Provider != legacy) {
+		t.Errorf("production candidates = %v, want [winpay.production mock]", names(got))
+	}
+
+	// Explicit config: sandbox traffic skips production-only entries.
+	merchant = &domain.Merchant{ID: "m1", Routing: domain.RoutingConfig{
+		Providers: []domain.RoutingProvider{
+			{Name: "winpay.production", Enabled: true},
+			{Name: "winpay.sandbox", Enabled: true},
+		},
+	}}
+	dec, err = router.Decide(merchant, &core.RouteRequest{MerchantID: "m1", Method: provider.MethodQRIS, Environment: domain.EnvironmentSandbox})
+	if err != nil {
+		t.Fatalf("Order sandbox config: %v", err)
+	}
+	got = dec.Candidates
+	if len(got) != 1 || got[0].Provider != sandboxOnly {
+		t.Errorf("sandbox routed to %v, want [winpay.sandbox]", names(got))
+	}
+}
+
+func TestRuleChainPrependsMatchingRule(t *testing.T) {
+	primary := &stubProvider{name: "winpay.sandbox", caps: provider.Capabilities{SupportsInquiry: true}}
+	fallback := &stubProvider{name: "mock", caps: provider.Capabilities{SupportsInquiry: true}}
+	registry := provider.NewRegistry()
+	registry.Add(primary)
+	registry.Add(fallback)
+
+	router := core.NewRouter(registry)
+	merchant := &domain.Merchant{ID: "m1", Routing: domain.RoutingConfig{
+		Strategy: domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{
+			{Name: "mock", Enabled: true},
+		},
+		Rules: []domain.RoutingRule{
+			{
+				Condition: domain.RoutingCondition{
+					Field:    domain.ConditionFieldAmount,
+					Operator: domain.ConditionOperatorGte,
+					Value:    "10000",
+				},
+				Providers: []string{"winpay.sandbox"},
+			},
+		},
+	}}
+
+	dec, err := router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodQRIS, Amount: 15000,
+	})
+	if err != nil {
+		t.Fatalf("Order rule match: %v", err)
+	}
+	got := dec.Candidates
+	if len(got) != 2 || got[0].Provider != primary || got[1].Provider != fallback {
+		t.Errorf("rule-match candidates = %v, want [winpay.sandbox mock]", names(got))
+	}
+
+	// Below the threshold the rule does not fire.
+	dec, err = router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodQRIS, Amount: 9999,
+	})
+	if err != nil {
+		t.Fatalf("Order no match: %v", err)
+	}
+	got = dec.Candidates
+	if len(got) != 1 || got[0].Provider != fallback {
+		t.Errorf("no-match candidates = %+v, want base chain", got)
+	}
+
+	// A metadata condition only fires when the request carries the key.
+	merchant.Routing.Rules = []domain.RoutingRule{
+		{
+			Condition: domain.RoutingCondition{
+				Field: "metadata:acquirer", Operator: domain.ConditionOperatorEq, Value: "xendit",
+			},
+			Providers: []string{"winpay.sandbox"},
+		},
+	}
+	dec, err = router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodQRIS, Amount: 15000, Metadata: map[string]string{"acquirer": "xendit"},
+	})
+	if err != nil {
+		t.Fatalf("Order metadata match: %v", err)
+	}
+	got = dec.Candidates
+	if got[0].Provider != primary {
+		t.Errorf("metadata candidates = %+v, want rule first", got)
+	}
+	dec, err = router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodQRIS, Amount: 15000, Metadata: map[string]string{"acquirer": "other"},
+	})
+	if err != nil {
+		t.Fatalf("Order metadata mismatch: %v", err)
+	}
+	got = dec.Candidates
+	if got[0].Provider != fallback {
+		t.Errorf("mismatch candidates = %+v, want base chain", got)
+	}
+	dec, err = router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodQRIS, Amount: 15000,
+	})
+	if err != nil {
+		t.Fatalf("Order metadata absent: %v", err)
+	}
+	got = dec.Candidates
+	if got[0].Provider != fallback {
+		t.Errorf("absent candidates = %+v, want base chain", got)
+	}
+
+	// Channel conditions compare the raw channel string.
+	merchant.Routing.Rules = []domain.RoutingRule{
+		{
+			Condition: domain.RoutingCondition{
+				Field: domain.ConditionFieldChannel, Operator: domain.ConditionOperatorEq, Value: "SHOPEE",
+			},
+			Providers: []string{"winpay.sandbox"},
+		},
+	}
+	dec, err = router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodVirtualAccount, Channel: "SHOPEE", Amount: 15000,
+	})
+	if err != nil {
+		t.Fatalf("Order channel match: %v", err)
+	}
+	got = dec.Candidates
+	if got[0].Provider != primary {
+		t.Errorf("channel candidates = %+v, want rule first", got)
+	}
+}
+
+func TestOrderForProviderResolvesEnvironmentInstance(t *testing.T) {
+	sandboxOnly := &stubProvider{name: "winpay.sandbox", caps: provider.Capabilities{SupportsInquiry: true}}
+	registry := provider.NewRegistry()
+	registry.Add(sandboxOnly)
+	router := core.NewRouter(registry)
+
+	// A bare adapter name resolves to the environment-scoped instance.
+	got, err := router.OrderForProvider("winpay", &core.RouteRequest{
+		Method: provider.MethodQRIS, Environment: domain.EnvironmentSandbox,
+	})
+	if err != nil {
+		t.Fatalf("OrderForProvider: %v", err)
+	}
+	if got[0].Provider != sandboxOnly {
+		t.Errorf("resolved %v, want winpay.sandbox", got[0].Provider.Name())
+	}
+
+	// The exact instance name keeps working.
+	if _, err = router.OrderForProvider("winpay.sandbox", &core.RouteRequest{
+		Method: provider.MethodQRIS, Environment: domain.EnvironmentSandbox,
+	}); err != nil {
+		t.Fatalf("OrderForProvider exact: %v", err)
+	}
+
+	// Cross-environment forcing is rejected.
+	if _, err = router.OrderForProvider("winpay.sandbox", &core.RouteRequest{
+		Method: provider.MethodQRIS, Environment: domain.EnvironmentProduction,
+	}); !errors.Is(err, domain.ErrNoRoute) {
+		t.Errorf("error = %v, want ErrNoRoute", err)
+	}
+
+	// Unknown adapters are still a no-route error.
+	if _, err = router.OrderForProvider("nope", &core.RouteRequest{
+		Method: provider.MethodQRIS, Environment: domain.EnvironmentSandbox,
+	}); !errors.Is(err, domain.ErrNoRoute) {
 		t.Errorf("error = %v, want ErrNoRoute", err)
 	}
 }

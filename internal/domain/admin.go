@@ -181,12 +181,11 @@ type ProviderConfig struct {
 }
 
 // InstanceName maps a provider adapter and environment onto the provider
-// instance name registered in the runtime registry. The unsuffixed name is
-// reserved for production builds so existing environment-var configured
-// providers keep their names; sandbox builds are distinguished explicitly.
+// instance name registered in the runtime registry. Environment-built names
+// are always suffixed, so sandbox and production instances of one adapter are
+// distinct and cannot be mixed across environments. The unsuffixed name is
+// reserved for legacy environment-variable configured providers, which serve
+// both environments.
 func InstanceName(provider, environment string) string {
-	if environment == EnvironmentSandbox {
-		return provider + ".sandbox"
-	}
-	return provider
+	return provider + "." + environment
 }

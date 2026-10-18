@@ -2,16 +2,18 @@ import type { Edge, Node } from "@xyflow/react";
 
 export type NodeKind = "entry" | "condition" | "provider" | "modify" | "respond";
 
-export type ConditionField = "amount" | "method" | "channel" | "environment";
+export type ConditionField = "amount" | "method" | "channel" | "currency" | "metadata";
 export type ConditionOperator = "gte" | "lte" | "eq" | "neq";
 
 export type ConditionConfig = {
   field: ConditionField;
   operator: ConditionOperator;
   value: string;
+  /** Only used when field is "metadata". */
+  metadataKey?: string;
 };
 
-export type ProviderConfig = { provider: string };
+export type ProviderConfig = { provider: string; enabled?: boolean };
 
 export type ModifyConfig = {
   description: string;
@@ -39,11 +41,272 @@ export type RoutingGraph = {
 
 export type Issue = { nodeId?: string; message: string };
 
+export type RoutingRulePayload = {
+  condition: { field: string; operator: string; value: string };
+  providers: string[];
+};
+
+export type CompiledRouting = {
+  strategy: string;
+  providers: { name: string; enabled: boolean; priority: number }[];
+  rules: RoutingRulePayload[];
+  issues: Issue[];
+};
+
+/**
+ * The edge marker the studio draws on every saved edge. Typed as a lookup so
+ * importing the value enum is not needed in this type-only module.
+ */
+const arrowMarker = { type: "arrowclosed" } as unknown as Edge["markerEnd"];
+
+/**
+ * Rebuilds the routing decision tree as a graph: entry node on the left,
+ * one condition node per stored rule (match branch feeding the rule's provider
+ * chain, else branch continuing to the next rule), then the fallback chain.
+ * The layout mirrors the compile walk in reverse so a saved config round-trips
+ * visually.
+ */
+export function graphFromRouting(
+  routing: {
+    strategy: string;
+    providers: { name: string; enabled: boolean }[];
+    rules?: { condition: { field: string; operator: string; value: string }; providers: string[] }[];
+  },
+): RoutingGraph {
+  const entry = createNode("entry", { x: 0, y: 200 });
+  const nodes: RoutingNode[] = [entry];
+  const edges: Edge[] = [];
+
+  const connect = (source: string, sourceHandle: string, target: RoutingNode, label: string) => {
+    nodes.push(target);
+    edges.push({
+      id: `e-${source}-${sourceHandle}-${target.id}`,
+      source,
+      target: target.id,
+      sourceHandle,
+      targetHandle: "in",
+      label,
+      markerEnd: arrowMarker,
+    } satisfies Edge);
+  };
+
+  let prev = entry.id;
+  let prevHandle = "out";
+  let x = 250;
+
+  (routing.rules ?? []).forEach((rule) => {
+    const cond = createNode("condition", { x, y: 200 });
+    const field = rule.condition.field;
+    cond.data.condition = {
+      field: field.startsWith("metadata:") ? "metadata" : (field as ConditionField),
+      operator: rule.condition.operator as ConditionOperator,
+      value: rule.condition.value,
+      metadataKey: field.startsWith("metadata:") ? field.slice("metadata:".length) : "",
+    };
+    connect(prev, prevHandle, cond, prevHandle === "else" ? "no match" : "next");
+    prev = cond.id;
+    prevHandle = "else";
+    x += 240;
+
+    rule.providers.forEach((name, index) => {
+      const node = createNode("provider", { x, y: 40 });
+      node.data.provider = { provider: name, enabled: true };
+      connect(prev, index === 0 ? "match" : "out", node, index === 0 ? "match" : "next");
+      prev = node.id;
+      prevHandle = "out";
+      x += 240;
+    });
+  });
+
+  routing.providers.forEach((p) => {
+    const node = createNode("provider", { x, y: 200 });
+    node.data.provider = { provider: p.name, enabled: p.enabled };
+    connect(prev, prevHandle, node, prevHandle === "else" ? "no match" : "next");
+    prev = node.id;
+    prevHandle = "out";
+    x += 240;
+  });
+
+  return { nodes, edges };
+}
+
+/**
+ * Compiles the graph back onto the wire format the engine understands.
+ *
+ * The graph is a decision tree: walking from the entry, each condition node
+ * contributes one rule (its "match" branch is the rule's provider chain) and
+ * the "no match" branch continues the walk; provider nodes on the main path
+ * form the fallback chain. The engine evaluates rules first-match-wins and
+ * falls through to the fallback chain, so a provider node placed *before* any
+ * condition would change order between matching and non-matching payments and
+ * is reported as an issue instead of being silently reordered.
+ */
+export function compileRouting(
+  graph: RoutingGraph,
+  strategy: string,
+  liveInstances: string[],
+): CompiledRouting {
+  const issues: Issue[] = [];
+  if (strategy !== "priority" && strategy !== "round_robin") {
+    issues.push({ message: "Strategy must be priority or round_robin." });
+  }
+
+  const entry = graph.nodes.find((n) => (n.data as RoutingNodeData).kind === "entry");
+  if (!entry) {
+    return { strategy, providers: [], rules: [], issues: [...issues, { message: "Graph has no entry node." }] };
+  }
+
+  const nodeOf = (id: string) => graph.nodes.find((n) => n.id === id) as RoutingNode | undefined;
+  const outsOf = (id: string, handle?: string) =>
+    graph.edges.filter((e) => e.source === id && (handle ? e.sourceHandle === handle : true));
+
+  const providers: CompiledRouting["providers"] = [];
+  const rules: RoutingRulePayload[] = [];
+  const visited = new Set<string>();
+  const seenConditions = new Set<string>();
+
+  const collectProviderChain = (startId: string, sourceHandle: string): string[] => {
+    const chain: string[] = [];
+    let cur: string | undefined = outsOf(startId, sourceHandle)[0]?.target;
+    while (cur && !visited.has(cur)) {
+      visited.add(cur);
+      const node = nodeOf(cur);
+      if (!node) break;
+      const d = node.data as RoutingNodeData;
+      if (d.kind !== "provider") {
+        issues.push({ nodeId: node.id, message: "Conditional branches can only reach provider nodes — nested conditions are not supported." });
+        break;
+      }
+      if (!d.provider?.provider) {
+        issues.push({ nodeId: node.id, message: "Provider node has no gateway selected." });
+      } else if (!liveInstances.includes(d.provider.provider)) {
+        issues.push({ nodeId: node.id, message: `${d.provider.provider} is not a live provider instance in this environment.` });
+      } else if (d.provider.enabled ?? true) {
+        chain.push(d.provider.provider);
+      }
+      const next = outsOf(node.id, "out");
+      if (next.length > 1) {
+        issues.push({ nodeId: node.id, message: "A provider forwards to only one next step — remove excess edges." });
+        break;
+      }
+      cur = next[0]?.target;
+    }
+    return chain;
+  };
+
+  let cur: string | undefined = outsOf(entry.id, "out")[0]?.target;
+  if (outsOf(entry.id, "out").length !== 1) {
+    issues.push({ nodeId: entry.id, message: "Connect the entry to exactly one next step." });
+    cur = undefined;
+  }
+
+  while (cur && !visited.has(cur)) {
+    visited.add(cur);
+    const node = nodeOf(cur);
+    if (!node) break;
+    const d = node.data as RoutingNodeData;
+
+    if (d.kind === "provider") {
+      if (!d.provider?.provider) {
+        issues.push({ nodeId: node.id, message: "Provider node has no gateway selected." });
+      } else if (!liveInstances.includes(d.provider.provider)) {
+        issues.push({ nodeId: node.id, message: `${d.provider.provider} is not a live provider instance in this environment.` });
+      } else {
+        providers.push({
+          name: d.provider.provider,
+          enabled: d.provider.enabled ?? true,
+          priority: providers.length + 1,
+        });
+      }
+      const next = outsOf(node.id, "out");
+      if (next.length > 1) {
+        issues.push({ nodeId: node.id, message: "A provider forwards to only one next step — remove excess edges." });
+        break;
+      }
+      cur = next[0]?.target;
+      continue;
+    }
+
+    if (d.kind === "condition") {
+      if (providers.length > 0) {
+        issues.push({
+          nodeId: node.id,
+          message: "Conditions must come before the fallback providers — rules are evaluated before the fallback chain.",
+        });
+      }
+
+      const cond = d.condition;
+      const label = `condition ${rules.length + 1}`;
+      let field = cond?.field ?? "";
+      let valid = true;
+      if (field === "metadata") {
+        const key = (cond?.metadataKey ?? "").trim();
+        if (!/^[A-Za-z0-9_-]+$/.test(key)) {
+          issues.push({ nodeId: node.id, message: `${label}: metadata key may only contain letters, digits, "_" and "-".` });
+          valid = false;
+        }
+        field = `metadata:${key}`;
+      } else if (!["amount", "method", "channel", "currency"].includes(field)) {
+        issues.push({ nodeId: node.id, message: `${label}: unknown condition field.` });
+        valid = false;
+      }
+      if (field === "amount" && !/^\d+$/.test((cond?.value ?? "").replace(/\s/g, ""))) {
+        issues.push({ nodeId: node.id, message: `${label}: amount must be an integer (IDR: rupiah).` });
+        valid = false;
+      } else if (field !== "amount" && (cond?.value ?? "").trim() === "") {
+        issues.push({ nodeId: node.id, message: `${label}: value is required.` });
+        valid = false;
+      }
+      const key = `${field}|${cond?.operator}|${cond?.value}`;
+      if (seenConditions.has(key)) {
+        issues.push({ nodeId: node.id, message: `${label}: an earlier rule has the same condition — it would never fire.` });
+      }
+      seenConditions.add(key);
+
+      const matchOuts = outsOf(node.id, "match");
+      if (matchOuts.length !== 1) {
+        issues.push({ nodeId: node.id, message: "Connect the condition's match output to a provider." });
+      } else {
+        const chain = collectProviderChain(node.id, "match");
+        if (chain.length === 0) {
+          issues.push({ nodeId: node.id, message: "The match branch reaches no enabled provider." });
+        } else if (valid) {
+          rules.push({
+            condition: { field, operator: cond?.operator ?? "", value: cond?.value ?? "" },
+            providers: chain,
+          });
+        }
+      }
+
+      const elseOuts = outsOf(node.id, "else");
+      if (elseOuts.length > 1) {
+        issues.push({ nodeId: node.id, message: "A condition has one no-match continuation — remove excess edges." });
+        break;
+      }
+      cur = elseOuts[0]?.target;
+      continue;
+    }
+
+    issues.push({ nodeId: node.id, message: "Only provider and condition nodes take part in routing." });
+    break;
+  }
+
+  graph.nodes.forEach((n) => {
+    const d = n.data as RoutingNodeData;
+    if (n.id !== entry.id && !visited.has(n.id) && (d.kind === "provider" || d.kind === "condition")) {
+      issues.push({ nodeId: n.id, message: "Node is not reachable from the entry and would not be saved." });
+    }
+  });
+
+  return { strategy, providers, rules, issues };
+}
+
 export const conditionFieldOptions = [
   { value: "amount", label: "Amount" },
   { value: "method", label: "Method" },
   { value: "channel", label: "Channel" },
-  { value: "environment", label: "Environment" },
+  { value: "currency", label: "Currency" },
+  { value: "metadata", label: "Metadata key" },
 ];
 
 export const methodOptions = [

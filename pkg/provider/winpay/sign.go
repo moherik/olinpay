@@ -93,7 +93,7 @@ func parsePrivateKey(raw string) (*rsa.PrivateKey, error) {
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(der)
 	if err != nil {
-		return nil, errors.New("winpay: private key is neither PKCS#1 nor PKCS#8 RSA")
+		return nil, fmt.Errorf("winpay: private key is not a plain RSA key (passphrase-protected keys and certificates are not accepted): %v", err)
 	}
 	key, ok := parsed.(*rsa.PrivateKey)
 	if !ok {

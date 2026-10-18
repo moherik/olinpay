@@ -640,6 +640,57 @@ errors on create, the next is tried. Add your own strategy by implementing
 A merchant with an empty provider list routes to **every** registered provider
 that supports the requested method — convenient for local development.
 
+### Conditional routes
+
+A merchant can also configure conditional rules that steer specific requests
+before the fallback chain. The first rule whose condition matches prepends its
+provider chain ahead of the configured fallback chain, so a failed rule route
+still falls through the base chain on a hard decline:
+
+```json
+{
+  "strategy": "priority",
+  "providers": [
+    {"name": "mock", "priority": 1, "enabled": true}
+  ],
+  "rules": [
+    {
+      "condition": {"field": "amount", "operator": "gte", "value": "10000"},
+      "providers": ["winpay.sandbox"]
+    }
+  ]
+}
+```
+
+Condition fields: `amount` (compares the request's integer `amount` — integer
+rupiah for IDR per the create-payment contract; `gte`/`lte`/`eq`/`neq`),
+`method`, `channel`, `currency`, and `metadata:<key>` (compares a `metadata`
+entry from the request — a rule never fires on requests missing that key).
+Operators: `eq`, `neq`, and `gte`/`lte` on `amount`.
+
+The admin API validates rules on save (known field, allowed operator, integer
+amounts, live provider instances). The console's routing page edits them as
+**condition nodes in the visual graph**: a condition's match branch is the
+rule's provider chain, the no-match branch continues to the next condition or
+the fallback chain. Conditions must sit before the fallback providers — rules
+are evaluated before the fallback chain, so the visual order matches runtime
+order.
+
+### Environments and forced providers
+
+Every request runs in one of two environments (sandbox or production, derived
+from the API key). Provider candidates are scoped to the requesting
+environment: DB-saved provider instances are registered as
+`<adapter>.<environment>` (e.g. `winpay.sandbox`) and never serve the other
+environment; environment-variable configured instances keep their bare adapter
+name (e.g. `mock`) and serve both.
+
+The optional `"provider"` field in a create-payment request also accepts the
+bare adapter name: the engine resolves it to the instance registered for the
+request's environment (`"winpay"` + sandbox → `winpay.sandbox`). An exact
+instance name keeps working, and forcing a cross-environment instance is
+rejected with `no_route`.
+
 ## Webhooks to your system
 
 When a transaction changes status, the engine enqueues a notification that the

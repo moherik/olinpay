@@ -20,10 +20,34 @@ var (
 	ErrForbidden = errors.New("forbidden")
 	// ErrNoRoute means no provider could be selected for the request.
 	ErrNoRoute = errors.New("no provider route available")
+	// ErrRejected means merchant routing configuration refused the payment
+	// before any gateway call (a routing "respond" node matched).
+	ErrRejected = errors.New("rejected by routing configuration")
 	// ErrUnprocessable means the request is understood but cannot be applied
 	// to the current state (e.g. cancelling a paid transaction).
 	ErrUnprocessable = errors.New("unprocessable")
 )
+
+// RejectedError is a routing-level custom rejection: merchant routing
+// configuration refused the payment before any gateway call. It answers the
+// payment API with the configured status, code and message. It satisfies
+// errors.Is(err, ErrRejected).
+type RejectedError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+// Error implements error.
+func (e *RejectedError) Error() string {
+	if e.Message == "" {
+		return ErrRejected.Error()
+	}
+	return fmt.Sprintf("%s: %s", ErrRejected, e.Message)
+}
+
+// Is makes RejectedError match errors.Is(err, ErrRejected).
+func (e *RejectedError) Is(target error) bool { return target == ErrRejected }
 
 // ValidationError carries field-level detail for invalid input.
 type ValidationError struct {

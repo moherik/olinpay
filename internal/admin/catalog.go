@@ -13,6 +13,7 @@ type Field struct {
 	Label       string   `json:"label"`
 	Secret      bool     `json:"secret,omitempty"`
 	Required    bool     `json:"required,omitempty"`
+	Multiline   bool     `json:"multiline,omitempty"`
 	Options     []string `json:"options,omitempty"`
 	Placeholder string   `json:"placeholder,omitempty"`
 	Help        string   `json:"help,omitempty"`
@@ -47,8 +48,8 @@ var adapterCatalog = map[string]Adapter{
 		Environments: []string{"sandbox"},
 		Methods:      []string{"virtual_account", "qris", "ewallet", "retail_outlet"},
 		Fields: []Field{
-			{Key: "secret", Secret: true, Placeholder: "mock-secret", Help: "HMAC secret used to sign mock callbacks."},
-			{Key: "va_prefix", Placeholder: "88888", Help: "Virtual account number prefix."},
+			{Key: "secret", Label: "Callback secret", Secret: true, Placeholder: "mock-secret", Help: "HMAC secret used to sign mock callbacks."},
+			{Key: "va_prefix", Label: "VA number prefix", Placeholder: "88888", Help: "Virtual account number prefix."},
 		},
 	},
 	"xendit": {
@@ -59,10 +60,10 @@ var adapterCatalog = map[string]Adapter{
 		Environments: []string{"sandbox", "production"},
 		Methods:      []string{"virtual_account", "credit_card", "ewallet", "qris", "retail_outlet"},
 		Fields: []Field{
-			{Key: "secret_key", Secret: true, Required: true, Help: "Xendit secret key (sk_...)."},
-			{Key: "callback_token", Secret: true, Help: "Xendit callback verification token."},
-			{Key: "return_url", Help: "Deep-link return URL for e-wallet redirects."},
-			{Key: "base_url", Placeholder: "https://api.xendit.co", Help: "Override only for testing."},
+			{Key: "secret_key", Label: "Secret key", Secret: true, Required: true, Help: "Xendit secret key (sk_...)."},
+			{Key: "callback_token", Label: "Callback verification token", Secret: true, Help: "Xendit callback verification token."},
+			{Key: "return_url", Label: "Payer return URL", Help: "Deep-link return URL for e-wallet redirects."},
+			{Key: "base_url", Label: "API base URL", Placeholder: "https://api.xendit.co", Help: "Override only for testing."},
 		},
 	},
 	"midtrans": {
@@ -73,11 +74,11 @@ var adapterCatalog = map[string]Adapter{
 		Environments: []string{"sandbox", "production"},
 		Methods:      []string{"virtual_account", "qris", "ewallet", "retail_outlet"},
 		Fields: []Field{
-			{Key: "server_key", Secret: true, Required: true, Help: "Midtrans server key."},
-			{Key: "qris_acquirer", Options: []string{"gopay", "bank", "airpay"}, Help: "QRIS acquirer to request."},
-			{Key: "gopay_callback_url", Help: "Callback URL registered for GoPay."},
-			{Key: "shopeepay_callback_url", Help: "Callback URL registered for ShopeePay."},
-			{Key: "base_url", Placeholder: "https://api.sandbox.midtrans.com", Help: "Override only for testing."},
+			{Key: "server_key", Label: "Server key", Secret: true, Required: true, Help: "Midtrans server key."},
+			{Key: "qris_acquirer", Label: "QRIS acquirer", Options: []string{"gopay", "bank", "airpay"}, Help: "QRIS acquirer to request."},
+			{Key: "gopay_callback_url", Label: "GoPay callback URL", Help: "Callback URL registered for GoPay."},
+			{Key: "shopeepay_callback_url", Label: "ShopeePay callback URL", Help: "Callback URL registered for ShopeePay."},
+			{Key: "base_url", Label: "API base URL", Placeholder: "https://api.sandbox.midtrans.com", Help: "Override only for testing."},
 		},
 	},
 	"midtrans-snap": {
@@ -88,15 +89,15 @@ var adapterCatalog = map[string]Adapter{
 		Environments: []string{"sandbox", "production"},
 		Methods:      []string{"virtual_account", "qris", "ewallet"},
 		Fields: []Field{
-			{Key: "client_id", Required: true, Help: "Midtrans OAuth client id (issuer)."},
-			{Key: "client_secret", Secret: true, Required: true, Help: "Midtrans OAuth client secret."},
-			{Key: "private_key", Secret: true, Required: true, Help: "PEM private key used to sign access-token requests."},
-			{Key: "partner_id", Help: "Midtrans partner id header."},
-			{Key: "merchant_id", Help: "Midtrans merchant id header."},
-			{Key: "partner_service_id", Help: "Virtual account service prefix."},
-			{Key: "channel_id", Placeholder: "DANA", Help: "Snap channel id (e.g. DANA)."},
-			{Key: "device_id", Help: "Snap device id header."},
-			{Key: "base_url", Placeholder: "https://api.sandbox.midtrans.com", Help: "Override only for testing."},
+			{Key: "client_id", Label: "Client ID", Required: true, Help: "Midtrans OAuth client id (issuer)."},
+			{Key: "client_secret", Label: "Client secret", Secret: true, Required: true, Help: "Midtrans OAuth client secret."},
+			{Key: "private_key", Label: "Private key (PEM)", Secret: true, Required: true, Multiline: true, Help: "PEM private key used to sign access-token requests."},
+			{Key: "partner_id", Label: "Partner ID", Help: "Midtrans partner id header."},
+			{Key: "merchant_id", Label: "Merchant ID", Help: "Midtrans merchant id header."},
+			{Key: "partner_service_id", Label: "VA service prefix (BIN)", Help: "Virtual account service prefix."},
+			{Key: "channel_id", Label: "Channel ID", Placeholder: "DANA", Help: "Snap channel id (e.g. DANA)."},
+			{Key: "device_id", Label: "Device ID", Help: "Snap device id header."},
+			{Key: "base_url", Label: "API base URL", Placeholder: "https://api.sandbox.midtrans.com", Help: "Override only for testing."},
 		},
 	},
 	"doku": {
@@ -107,13 +108,13 @@ var adapterCatalog = map[string]Adapter{
 		Environments: []string{"sandbox", "production"},
 		Methods:      []string{"virtual_account", "qris", "ewallet"},
 		Fields: []Field{
-			{Key: "client_id", Required: true, Help: "DOKU client id (client-Id)."},
-			{Key: "client_secret", Secret: true, Required: true, Help: "DOKU client secret."},
-			{Key: "private_key", Secret: true, Required: true, Help: "PEM private key used to sign token requests."},
-			{Key: "partner_service_id", Help: "Virtual account service prefix."},
-			{Key: "merchant_id", Help: "DOKU merchant id."},
-			{Key: "terminal_id", Help: "DOKU terminal id."},
-			{Key: "base_url", Placeholder: "https://api-sandbox.doku.com", Help: "Override only for testing."},
+			{Key: "client_id", Label: "Client ID", Required: true, Help: "DOKU client id (client-Id)."},
+			{Key: "client_secret", Label: "Client secret", Secret: true, Required: true, Help: "DOKU client secret."},
+			{Key: "private_key", Label: "Private key (PEM)", Secret: true, Required: true, Multiline: true, Help: "PEM private key used to sign token requests."},
+			{Key: "partner_service_id", Label: "VA service prefix (BIN)", Help: "Virtual account service prefix."},
+			{Key: "merchant_id", Label: "Merchant ID", Help: "DOKU merchant id."},
+			{Key: "terminal_id", Label: "Terminal ID", Help: "DOKU terminal id."},
+			{Key: "base_url", Label: "API base URL", Placeholder: "https://api-sandbox.doku.com", Help: "Override only for testing."},
 		},
 	},
 	"winpay": {
@@ -124,10 +125,10 @@ var adapterCatalog = map[string]Adapter{
 		Environments: []string{"sandbox", "production"},
 		Methods:      []string{"qris", "virtual_account"},
 		Fields: []Field{
-			{Key: "partner_id", Required: true, Help: "Winpay partner id."},
-			{Key: "private_key", Secret: true, Required: true, Help: "PEM private key used to sign requests."},
-			{Key: "channel_id", Help: "Winpay channel id."},
-			{Key: "base_url", Placeholder: "https://winpay.dev", Help: "Override only for testing."},
+			{Key: "partner_id", Label: "Partner ID", Required: true, Help: "Winpay partner id."},
+			{Key: "private_key", Label: "Private key (PEM)", Secret: true, Required: true, Multiline: true, Help: "PEM private key used to sign requests."},
+			{Key: "channel_id", Label: "Channel ID", Help: "Winpay channel id."},
+			{Key: "base_url", Label: "API base URL", Placeholder: "https://winpay.dev", Help: "Override only for testing."},
 		},
 	},
 }

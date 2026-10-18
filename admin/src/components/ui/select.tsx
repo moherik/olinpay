@@ -14,6 +14,7 @@ export function SelectControl({
   className,
   ariaLabel,
   id,
+  disabled,
 }: {
   value?: string;
   onValueChange: (value: string) => void;
@@ -22,15 +23,18 @@ export function SelectControl({
   className?: string;
   ariaLabel?: string;
   id?: string;
+  disabled?: boolean;
 }) {
   return (
-    <Select.Root value={value} onValueChange={onValueChange}>
+    <Select.Root value={value} onValueChange={onValueChange} disabled={disabled}>
       <Select.Trigger
         id={id}
         aria-label={ariaLabel}
+        disabled={disabled}
         className={cn(
           "inline-flex h-8 items-center justify-between gap-2 rounded-control border border-border bg-surface px-2.5 text-[13px] text-ink",
           "data-[placeholder]:text-muted",
+          "disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-muted",
           className,
         )}
       >

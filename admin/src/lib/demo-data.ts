@@ -97,6 +97,7 @@ export type Provider = {
     type: "text" | "password" | "url" | "select";
     required: boolean;
     secret?: boolean;
+    multiline?: boolean;
     value?: string;
     options?: string[];
     help?: string;

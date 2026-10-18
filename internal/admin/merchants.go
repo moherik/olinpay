@@ -5,11 +5,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/moherik/openpay.id/internal/domain"
 	"github.com/moherik/openpay.id/internal/platform/id"
 	"github.com/moherik/openpay.id/internal/repository"
+	"github.com/moherik/openpay.id/pkg/provider"
 )
 
 // listMerchants serves GET /api/merchants?q= with per-merchant card data: key
@@ -210,6 +213,13 @@ func (s *Server) saveRouting(w http.ResponseWriter, r *http.Request) {
 		p.Priority = i
 		body.Providers[i] = p
 	}
+	if err := validateRoutingRules(body.Rules, s.registry); err != nil {
+		invalidField(w, "rules", err.Error())
+		return
+	}
+	if body.Rules == nil {
+		body.Rules = []domain.RoutingRule{}
+	}
 
 	m, err := s.merchants.GetByID(r.Context(), chiURLParam(r, "id"))
 	if err != nil {
@@ -228,12 +238,103 @@ func (s *Server) saveRouting(w http.ResponseWriter, r *http.Request) {
 		for _, p := range body.Providers {
 			names = append(names, p.Name)
 		}
-		s.auditWrite(r, user, "merchant.routing", m.ID+" ["+strings.Join(names, " → ")+"]")
+		detail := m.ID + " [" + strings.Join(names, " → ") + "]"
+		if len(body.Rules) > 0 {
+			detail += fmt.Sprintf(", %d conditional rules", len(body.Rules))
+		}
+		s.auditWrite(r, user, "merchant.routing", detail)
 	}
 	writeData(w, http.StatusOK, m, map[string]any{
 		"environments": envsOf(s, r, m.ID),
 	})
 }
+
+// validateRoutingRules checks conditional rules before they are stored: a
+// rule whose condition is structurally impossible would silently never fire,
+// and a rule chain referencing an unregistered instance would fail at match
+// time. Amount compares the request's integer amount as-is (IDR: rupiah).
+func validateRoutingRules(rules []domain.RoutingRule, registry *provider.Registry) error {
+	allowedStrOps := fmt.Sprintf("%s, %s", domain.ConditionOperatorEq, domain.ConditionOperatorNotEq)
+	allowedNumOps := allowedStrOps + fmt.Sprintf(", %s, %s", domain.ConditionOperatorGte, domain.ConditionOperatorLte)
+	seenKeys := map[string]bool{}
+	for i, rule := range rules {
+		label := fmt.Sprintf("rule %d", i+1)
+		cond := rule.Condition
+		if seenKeys[cond.Field+"|"+cond.Operator+"|"+cond.Value] {
+			return fmt.Errorf("%s is a duplicate condition", label)
+		}
+		seenKeys[cond.Field+"|"+cond.Operator+"|"+cond.Value] = true
+
+		field := cond.Field
+		key, isMetadata := strings.CutPrefix(field, domain.ConditionMetadataPrefix)
+		switch {
+		case field == domain.ConditionFieldAmount:
+			if _, err := strconv.ParseInt(cond.Value, 10, 64); err != nil {
+				return fmt.Errorf("%s condition value %q is not an integer (IDR: rupiah)", label, cond.Value)
+			}
+			if _, ok := numOperator(cond.Operator); !ok {
+				return fmt.Errorf("%s condition operator %q must be one of %s", label, cond.Operator, allowedNumOps)
+			}
+		case field == domain.ConditionFieldMethod, field == domain.ConditionFieldChannel, field == domain.ConditionFieldCurrency:
+			if _, ok := stringOperator(cond.Operator); !ok {
+				return fmt.Errorf("%s condition operator %q must be one of %s", label, cond.Operator, allowedStrOps)
+			}
+		case isMetadata && strings.TrimSpace(key) != "":
+			if !metadataKeyPattern.MatchString(key) {
+				return fmt.Errorf("%s metadata key %q may only contain letters, digits, '_' and '-'", label, key)
+			}
+			if _, ok := stringOperator(cond.Operator); !ok {
+				return fmt.Errorf("%s condition operator %q must be one of %s", label, cond.Operator, allowedStrOps)
+			}
+		default:
+			return fmt.Errorf("%s condition field must be amount, method, channel, currency or \"metadata:<key>\"", label)
+		}
+		if strings.TrimSpace(cond.Value) == "" {
+			return fmt.Errorf("%s condition value is required", label)
+		}
+
+		if len(rule.Providers) == 0 {
+			return fmt.Errorf("%s routes to no provider — remove the rule or pick at least one", label)
+		}
+		seen := map[string]bool{}
+		for _, name := range rule.Providers {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("%s references an empty provider", label)
+			}
+			if seen[name] {
+				return fmt.Errorf("%s lists provider %s twice", label, name)
+			}
+			seen[name] = true
+			if _, ok := registry.Get(name); !ok {
+				return fmt.Errorf("%s references provider %s which is not registered", label, name)
+			}
+		}
+	}
+	return nil
+}
+
+func numOperator(op string) (string, bool) {
+	switch op {
+	case domain.ConditionOperatorEq, domain.ConditionOperatorNotEq,
+		domain.ConditionOperatorGte, domain.ConditionOperatorLte:
+		return op, true
+	default:
+		return "", false
+	}
+}
+
+func stringOperator(op string) (string, bool) {
+	switch op {
+	case domain.ConditionOperatorEq, domain.ConditionOperatorNotEq:
+		return op, true
+	default:
+		return "", false
+	}
+}
+
+// metadataKeyPattern restricts rule metadata keys to URL/JSON-friendly
+// characters so the field name round-trips through queries and audit lines.
+var metadataKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // newWebhookSecret generates the per-merchant outbound callback secret.
 func newWebhookSecret() (string, error) {

@@ -6,6 +6,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { SelectControl } from "@/components/ui/select";
 import { DialogContent, DialogRoot } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { apiMutate, ApiError } from "@/lib/api";
 import type { Environment, Provider } from "@/lib/demo-data";
 
@@ -166,7 +167,17 @@ export function ProviderConfigDialog({
                 }
                 error={errors[field.key]}
               >
-                {field.type === "select" ? (
+                {field.multiline ? (
+                  <Textarea
+                    id={`cfg-${provider.name}-${field.key}`}
+                    value={values[field.key] ?? ""}
+                    onChange={(event) => setValue(field.key, event.target.value)}
+                    placeholder={keptSecret ? "Stored, leave blank to keep" : undefined}
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="font-mono text-[11.5px]"
+                  />
+                ) : field.type === "select" ? (
                   <SelectControl
                     ariaLabel={field.label}
                     value={values[field.key] || undefined}

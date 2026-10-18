@@ -211,6 +211,7 @@ export type RawField = {
   label: string;
   secret?: boolean;
   required?: boolean;
+  multiline?: boolean;
   options?: string[];
   placeholder?: string;
   help?: string;
@@ -396,10 +397,15 @@ export function mapProvider(
         : undefined,
     configFields: (raw.config_fields ?? []).map((field) => ({
       key: field.key,
-      label: field.label,
+      // The catalog sets human labels; the key fallback keeps unknown
+      // adapters readable instead of rendering a labelless input.
+      label: field.label
+        ? field.label
+        : field.key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
       type: field.secret ? ("password" as const) : ("text" as const),
       required: field.required ?? false,
       secret: field.secret ?? false,
+      multiline: field.multiline ?? false,
       value: field.secret ? undefined : (state?.values?.[field.key] ?? ""),
       options: field.options,
       help: field.help,
