@@ -190,7 +190,7 @@ export default function TransactionsPage() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "openpay-transactions.csv";
+    anchor.download = "awsempay-transactions.csv";
     anchor.click();
     URL.revokeObjectURL(url);
     notify(`Exported ${rows.length} rows to CSV.`);

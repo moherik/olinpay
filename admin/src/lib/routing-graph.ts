@@ -472,7 +472,6 @@ export function compileRouting(
   }
 
   graph.nodes.forEach((n) => {
-    const d = n.data as RoutingNodeData;
     if (n.id !== entry.id && !visited.has(n.id)) {
       issues.push({ nodeId: n.id, message: "Node is not reachable from the entry and would not be saved." });
     }

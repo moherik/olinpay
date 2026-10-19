@@ -42,8 +42,7 @@ func TestMatchesMerchantIDShape(t *testing.T) {
 	if got, err := id.NewMerchantID(); err != nil || !id.MatchesMerchantIDShape(got) {
 		t.Fatalf("generated id %q (err %v) must match its own shape", got, err)
 	}
-	// Pre-format identifiers from older installs stay valid as opaque strings
-	// but are outside the new shape.
+	// Anything outside the generated shape does not count as one.
 	for _, s := range []string{"mch_c4933bd7-14ce-4bc1-9e5d-8a026fb23245", "AW1", "awesome234", "AWO2345X9"} {
 		if id.MatchesMerchantIDShape(s) {
 			t.Fatalf("%q must not count as a generated merchant id", s)

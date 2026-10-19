@@ -1,8 +1,9 @@
-# openpay.id
+# AwsemPay
 
 Open source **payment orchestration** for Indonesia.
 
-`openpay.id` sits between your business system and the many payment gateways
+AwsemPay (the `openpay.id` project) sits between your business system and the
+many payment gateways
 (PJP) in Indonesia — Midtrans, Xendit, DOKU, Duitku, OY!, and so on. Instead of
 integrating each gateway one by one, you integrate **one API** and let the
 orchestrator handle translation, routing, and callbacks.

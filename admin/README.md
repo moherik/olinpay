@@ -1,6 +1,7 @@
 # Admin console
 
-The operator dashboard for openpay.id, built with Next.js. It talks to the Go
+The operator dashboard for the AwsemPay platform (the `openpay.id` project),
+built with Next.js. It talks to the Go
 backend's admin API (`/admin/api` mount on the API server) — there is no demo
 data: every number, list and credential on screen comes from the database.
 

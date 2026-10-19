@@ -787,8 +787,7 @@ func TestSetupWizardInstallsFirstOwner(t *testing.T) {
 }
 
 // TestMerchantIDsUseAWPrefix pins the public merchant identifier contract:
-// new merchants get short AW-prefixed IDs (max 10 characters) instead of the
-// pre-format mch_ UUIDs.
+// new merchants get short AW-prefixed IDs of max 10 characters.
 func TestMerchantIDsUseAWPrefix(t *testing.T) {
 	f := setup(t)
 	cookie := f.loginAs(t, "operator@console.test", "operator")

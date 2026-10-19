@@ -650,9 +650,7 @@ components:
           type: string
           description: >
             Merchant identifier, `AW` prefix plus 8 random characters, at most
-            10 characters in total (e.g. "AW9X2K4T7Z"). Merchants created
-            before this format keep their historical `mch_...` identifiers;
-            both work identically.
+            10 characters in total (e.g. "AW9X2K4T7Z").
         name: { type: string }
         api_key_prefix: { type: string }
         callback_url: { type: string, format: uri }

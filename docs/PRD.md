@@ -1,10 +1,10 @@
 # openpay.id — Project Specification and Agent Onboarding
 
-This document records the product intent, design decisions, architecture, implementation state, and known limitations of `openpay.id`. Read it together with `README.md` before changing behavior. Treat the repository as source of truth if this context becomes stale.
+This document records the product intent, design decisions, architecture, implementation state, and known limitations of the AwsemPay platform (`openpay.id`). Read it together with `README.md` before changing behavior. Treat the repository as source of truth if this context becomes stale.
 
 ## 1. Product intent
 
-`openpay.id` is an open-source payment orchestration service for Indonesian businesses. A merchant integrates with one API; OpenPay translates the merchant's unified payment requests to one or more PJP/payment-gateway APIs, routes requests, normalizes responses and callbacks, persists transaction state, and sends signed status webhooks to the merchant.
+`AwsemPay` is an open-source payment orchestration service for Indonesian businesses. A merchant integrates with one API; AwsemPay translates the merchant's unified payment requests to one or more PJP/payment-gateway APIs, routes requests, normalizes responses and callbacks, persists transaction state, and sends signed status webhooks to the merchant.
 
 It is an orchestration layer—not a PJP, acquiring service, wallet, ledger, or settlement bank. The main goal is to let business systems switch/select payment gateways without embedding each gateway's API and callback semantics.
 
@@ -27,7 +27,7 @@ The four logical components requested in the initial brainstorming are all in on
 | Initial provider scope | Mock provider plus interface | Later user requests added Winpay, Midtrans (legacy Core API and BI-SNAP), Xendit and DOKU as concrete, real-world examples. |
 | Provider registration | `provider.Register(name, factory)` from adapter `init()` | Similar to `database/sql` driver registration; binary blank-imports each shipped adapter. |
 | Routing | Pluggable strategy; built-in `priority`, `round_robin` | Strategies order eligible candidates; create tries them as failover. |
-| Merchant ID | `AW` prefix + 8 random characters, max 10 total | Short, human-typed identifiers (e.g. `AW239823`); historical `mch_...` rows stay valid as opaque strings. |
+| Merchant ID | `AW` prefix + 8 random characters, max 10 total | Short, human-typed identifiers (e.g. `AW239823`); no other format is supported. |
 | Idempotency | `(merchant_id, reference_id)` | A repeated create request should return the existing transaction, not charge again. |
 | Outbound webhooks | Persist before delivery; retry with exponential backoff | Avoid losing events across process restarts. |
 | Testing | In-memory repositories and `httptest` | Routine tests should not require a database or provider credentials. |

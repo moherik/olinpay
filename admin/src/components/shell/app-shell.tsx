@@ -2,24 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Suspense, useState } from "react";
-import {
-  IconAudit,
-  IconChevronDown,
-  IconMerchants,
-  IconOverview,
-  IconProviders,
-  IconRouting,
-  IconTransactions,
-  IconUsers,
-  IconWebhooks,
-} from "@/components/icons";
+import { Suspense } from "react";
+import { IconChevronDown } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import {
-  DialogContent,
-  DialogRoot,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import {
   DropdownContent,
   DropdownItem,
@@ -35,31 +20,16 @@ import type { Environment } from "@/lib/demo-data";
 import type { ThemeMode } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-const navGroups = [
-  {
-    label: "Monitor",
-    items: [
-      { href: "/", label: "Overview", icon: IconOverview },
-      { href: "/transactions", label: "Transactions", icon: IconTransactions },
-      { href: "/webhooks", label: "Webhooks", icon: IconWebhooks },
-    ],
-  },
-  {
-    label: "Configure",
-    items: [
-      { href: "/merchants", label: "Merchants", icon: IconMerchants },
-      { href: "/routing", label: "Routing", icon: IconRouting },
-      { href: "/providers", label: "Providers", icon: IconProviders },
-      { href: "/users", label: "Users and roles", icon: IconUsers },
-    ],
-  },
-  {
-    label: "Security",
-    items: [
-      { href: "/api-keys", label: "API keys", icon: IconProviders },
-      { href: "/audit", label: "Audit log", icon: IconAudit },
-    ],
-  },
+const navItems = [
+  { href: "/", label: "Overview" },
+  { href: "/transactions", label: "Transactions" },
+  { href: "/webhooks", label: "Webhooks" },
+  { href: "/merchants", label: "Merchants" },
+  { href: "/routing", label: "Routing" },
+  { href: "/providers", label: "Providers" },
+  { href: "/api-keys", label: "API keys" },
+  { href: "/users", label: "Users" },
+  { href: "/audit", label: "Audit" },
 ];
 
 function isActive(pathname: string, href: string) {
@@ -70,72 +40,50 @@ function isActive(pathname: string, href: string) {
 /* Static stand-in while the path is not yet known. It carries no active state. */
 function NavFallback() {
   return (
-    <nav className="flex flex-col gap-4" aria-hidden="true">
-      {navGroups.map((group) => (
-        <div key={group.label}>
-          <p className="px-2.5 pb-1 text-[11px] font-medium tracking-[0.02em] text-muted">
-            {group.label}
-          </p>
-          <ul className="flex flex-col gap-0.5">
-            {group.items.map((item) => (
-              <li
-                key={item.href}
-                className="flex h-8 items-center gap-2 rounded-[3px] px-2.5 text-[13px] text-muted"
-              >
-                <item.icon size={16} />
-                {item.label}
-              </li>
-            ))}
-          </ul>
-        </div>
+    <ul aria-hidden="true" className="flex items-center gap-1 px-4 lg:px-6">
+      {navItems.map((item) => (
+        <li key={item.href} className="flex h-10 items-center px-2.5 text-[13px] text-muted">
+          {item.label}
+        </li>
       ))}
-    </nav>
+    </ul>
   );
 }
 
-function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
+function NavLinks() {
   const pathname = usePathname();
   return (
-    <nav className="flex flex-col gap-4" aria-label="Admin sections">
-      {navGroups.map((group) => (
-        <div key={group.label}>
-          <p className="px-2.5 pb-1 text-[11px] font-medium tracking-[0.02em] text-muted">
-            {group.label}
-          </p>
-          <ul className="flex flex-col gap-0.5">
-            {group.items.map((item) => {
-              const active = isActive(pathname, item.href);
-              const Icon = item.icon;
-              return (
-                <li key={item.href}>
-                  <Link
-                    href={item.href}
-                    onClick={onNavigate}
-                    aria-current={active ? "page" : undefined}
-                    className={cn(
-                      "flex h-8 items-center gap-2 rounded-[3px] px-2.5 text-[13px] transition-colors",
-                      active
-                        ? "bg-accent-soft font-medium text-accent"
-                        : "text-secondary hover:bg-surface-muted hover:text-ink",
-                    )}
-                  >
-                    <Icon size={16} />
-                    {item.label}
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ))}
+    <nav
+      aria-label="Admin sections"
+      className="flex items-center gap-1 overflow-x-auto px-4 lg:px-6"
+    >
+      {navItems.map((item) => {
+        const active = isActive(pathname, item.href);
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            aria-current={active ? "page" : undefined}
+            className={cn(
+              "flex h-10 shrink-0 items-center border-b-2 px-2.5 text-[13px] transition-colors",
+              "border-transparent",
+              active
+                ? "-mb-px border-ink font-medium text-ink"
+                : "text-secondary hover:text-ink",
+            )}
+          >
+            {item.label}
+          </Link>
+        );
+      })}
     </nav>
   );
 }
 
-function SuspendedNav({ onNavigate }: { onNavigate?: () => void }) {
+function SuspendedNav() {
   return (
     <Suspense fallback={<NavFallback />}>
-      <NavLinks onNavigate={onNavigate} />
+      <NavLinks />
     </Suspense>
   );
 }
@@ -163,9 +111,7 @@ function EnvironmentSwitch() {
             className={cn(
               "rounded-[3px] px-2 py-1 text-[12px] font-medium transition-colors",
               active
-                ? option.value === "production"
-                  ? "bg-surface text-ink shadow-[var(--shadow-raised)]"
-                  : "bg-surface text-secondary shadow-[var(--shadow-raised)]"
+                ? "bg-surface text-ink shadow-[var(--shadow-raised)]"
                 : "text-muted hover:text-ink",
             )}
           >
@@ -188,13 +134,13 @@ function AccountMenu() {
   const user = auth.ready && auth.authenticated ? auth.user : null;
   const initials =
     user === null
-      ? "OP"
+      ? "AW"
       : (user.name || user.email)
           .split(/[\s@.]+/)
           .filter(Boolean)
           .slice(0, 2)
           .map((part) => part[0]?.toUpperCase())
-          .join("") || "OP";
+          .join("") || "AW";
   return (
     <DropdownRoot>
       <DropdownTrigger asChild>
@@ -251,66 +197,36 @@ function AccountMenu() {
   );
 }
 
-function MobileNav() {
-  const [open, setOpen] = useState(false);
-  return (
-    <DialogRoot open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="secondary" size="sm">
-          Sections
-        </Button>
-      </DialogTrigger>
-      <DialogContent title="Navigation">
-        <SuspendedNav onNavigate={() => setOpen(false)} />
-      </DialogContent>
-    </DialogRoot>
-  );
-}
-
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen">
-      <aside className="fixed inset-y-0 left-0 hidden w-[224px] flex-col justify-between border-r border-border bg-surface lg:flex">
-        <div className="p-3">
-          <Link href="/" className="mb-4 flex flex-col px-2.5 py-1">
-            <span className="text-[15px] font-semibold tracking-[-0.01em] text-ink">
-              openpay.id
-            </span>
-            <span className="text-[11px] text-muted">admin console</span>
-          </Link>
-          <SuspendedNav />
-        </div>
-        <div className="border-t border-border-subtle p-3">
-          <p className="px-2.5 text-[11px] text-muted">
-            Admin console
-          </p>
-        </div>
-      </aside>
-
-      <div className="lg:pl-[224px]">
-        <div className="sticky top-0 z-40 border-b border-border bg-surface">
-          <div className="flex h-12 items-center justify-between gap-3 px-4 lg:px-6">
-            <div className="flex items-center gap-3 lg:hidden">
-              <Link href="/" className="text-[14px] font-semibold text-ink">
-                openpay.id
-              </Link>
-              <MobileNav />
-            </div>
-            <div className="hidden lg:block">
-              <EnvironmentSwitch />
-            </div>
-            <div className="flex items-center gap-2">
-              <AccountMenu />
-            </div>
+      <header className="sticky top-0 z-40 border-b border-border bg-surface">
+        <div className="mx-auto flex h-12 max-w-[1320px] items-center justify-between gap-3 px-4 lg:px-6">
+          <div className="flex items-center gap-3">
+            <Link
+              href="/"
+              className="flex items-center gap-2"
+              aria-label="AwsemPay console home"
+            >
+              <span
+                aria-hidden="true"
+                className="flex h-6 w-6 items-center justify-center rounded-[6px] bg-ink text-[12px] font-bold text-canvas"
+              >
+                A
+              </span>
+              <span className="text-[15px] font-semibold tracking-[-0.01em] text-ink">
+                AwsemPay
+              </span>
+            </Link>
+            <EnvironmentSwitch />
           </div>
+          <AccountMenu />
         </div>
-        <main className="mx-auto max-w-[1320px] px-4 py-5 lg:px-6">
-          <div className="mb-4 lg:hidden">
-              <EnvironmentSwitch />
-          </div>
-          {children}
-        </main>
-      </div>
+        <SuspendedNav />
+      </header>
+      <main className="mx-auto max-w-[1320px] px-4 py-5 lg:px-6">
+        {children}
+      </main>
     </div>
   );
 }

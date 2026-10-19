@@ -9,9 +9,9 @@ import { AppProvider } from "@/components/shell/app-context";
 import { THEME_BOOTSTRAP_SCRIPT } from "@/lib/theme";
 
 export const metadata: Metadata = {
-  title: "openpay.id admin console",
+  title: "AwsemPay admin console",
   description:
-    "Design review build for the openpay.id admin console. Connected to the openpay.id admin API.",
+    "Design review build for the AwsemPay admin console. Connected to the AwsemPay admin API.",
 };
 
 export default function RootLayout({

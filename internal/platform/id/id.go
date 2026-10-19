@@ -40,9 +40,7 @@ const MerchantIDLength = 10
 
 // NewMerchantID returns a short human-typed merchant identifier, e.g.
 // "AW239823"-style: the AW prefix plus 8 random characters, exactly 10
-// characters in total. Historical rows seeded before this format ("mch_...)
-// keep working unchanged: merchant IDs are opaque strings and there is no
-// length-sensitive parsing.
+// characters in total.
 func NewMerchantID() (string, error) {
 	buf := make([]byte, MerchantIDLength-len(MerchantIDPrefix))
 	if _, err := rand.Read(buf); err != nil {
@@ -56,8 +54,7 @@ func NewMerchantID() (string, error) {
 }
 
 // MatchesMerchantIDShape reports whether s looks like a generated merchant ID.
-// Pre-format rows ("mch_...") deliberately fail this and remain valid — the
-// predicate exists for tests and display, not for access control.
+// The predicate exists for tests and display, not for access control.
 func MatchesMerchantIDShape(s string) bool {
 	if len(s) != MerchantIDLength || !strings.HasPrefix(s, MerchantIDPrefix) {
 		return false

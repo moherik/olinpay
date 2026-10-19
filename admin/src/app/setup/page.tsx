@@ -72,7 +72,7 @@ export default function SetupPage() {
         <Panel className="w-full max-w-lg">
           <PanelBody className="flex flex-col gap-3 p-6">
             <h1 className="text-[15px] font-medium text-ink">
-              openpay.id admin console
+              AwsemPay admin console
             </h1>
             {fatal ? (
               <p className="text-[13px] text-failed">{fatal}</p>
@@ -90,7 +90,7 @@ export default function SetupPage() {
       <div className="flex w-full max-w-2xl flex-col gap-4">
         <div className="pb-1">
           <h1 className="text-[15px] font-medium text-ink">
-            openpay.id admin setup
+            AwsemPay admin setup
           </h1>
           <p className="mt-1 text-[13px] text-secondary">
             First install: create the console owner, then optionally wire the

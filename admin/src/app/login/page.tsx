@@ -1,7 +1,6 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
@@ -13,6 +12,8 @@ import { ApiError, apiMutate, fetchConsoleStatus, fetchMe } from "@/lib/api";
 /**
  * The only sign-in screen. Credentials verify against the backend's
  * bcrypt store; the API sets the HttpOnly session cookie on the response.
+ * A console with no account yet never shows this form — the visitor is
+ * sent straight to the first-install setup wizard.
  */
 export default function LoginPage() {
   const router = useRouter();
@@ -21,7 +22,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [needsSetup, setNeedsSetup] = useState(false);
+  const [toSetup, setToSetup] = useState(false);
 
   // An already-authenticated visitor skips the form entirely.
   useEffect(() => {
@@ -31,7 +32,10 @@ export default function LoginPage() {
         // On a console with no account at all, the wizard is the way in.
         try {
           const status = await fetchConsoleStatus();
-          setNeedsSetup(status.data.needs_setup);
+          if (status.data.needs_setup) {
+            setToSetup(true);
+            router.replace("/setup");
+          }
         } catch {
           /* the API is down; the form still renders with its own error */
         }
@@ -58,29 +62,33 @@ export default function LoginPage() {
     }
   }
 
+  if (toSetup) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center p-6">
+        <Panel className="w-full max-w-sm">
+          <PanelBody className="p-6">
+            <p className="text-[13px] text-secondary">
+              This console has no account yet — opening the first-install
+              setup…
+            </p>
+          </PanelBody>
+        </Panel>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-dvh items-center justify-center p-6">
       <Panel className="w-full max-w-sm">
         <PanelBody className="flex flex-col gap-4 p-6">
           <div>
             <h1 className="text-[15px] font-medium text-ink">
-              openpay.id admin console
+              AwsemPay admin console
             </h1>
             <p className="mt-1 text-[13px] text-secondary">
               Sign in with your console account. Sessions expire after 12 hours.
             </p>
           </div>
-          {needsSetup ? (
-            <div className="flex flex-col gap-2 rounded-panel border border-border bg-surface-muted px-3 py-2.5">
-              <p className="text-[12px] text-secondary">
-                This console has no account yet. Run the first-install setup to
-                create its owner.
-              </p>
-              <Button asChild variant="primary" size="sm">
-                <Link href="/setup">Set up openpay</Link>
-              </Button>
-            </div>
-          ) : null}
           <form className="flex flex-col gap-4" onSubmit={submit}>
             <Field
               label="Email"
