@@ -206,7 +206,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             : "bg-sandbox-wash",
         )}
       >
-        <div className="mx-auto flex h-12 max-w-[1320px] items-center justify-between gap-3 px-4 lg:px-6">
+        <div className="flex h-12 items-center justify-between gap-3 px-4 lg:px-6">
           <div className="flex items-center gap-3">
             <Link
               href="/"
@@ -227,7 +227,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <AccountMenu />
         </div>
-        <div className="mx-auto max-w-[1320px] px-4 lg:px-6">
+        <div className="flex h-full items-center px-4 lg:px-6">
           <SuspendedNav />
         </div>
       </header>
