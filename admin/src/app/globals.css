@@ -43,6 +43,10 @@
   --color-accent: #1d4ed8;
   --color-accent-hover: #1a44bd;
   --color-accent-soft: #eaf1fe;
+  /* Header washes: the shell's top section is tinted by the active
+     environment — amber for sandbox, blue for production. */
+  --color-sandbox-wash: #fdf3e7;
+  --color-production-wash: #eaf1fe;
   --color-on-accent: #ffffff;
 
   --color-paid: #067647;
@@ -103,6 +107,8 @@
     --color-accent: #82a8ff;
     --color-accent-hover: #9cbcff;
     --color-accent-soft: #1c2942;
+    --color-sandbox-wash: #2b1f0d;
+    --color-production-wash: #1c2942;
     --color-on-accent: #0b1017;
 
     --color-paid: #4ed08a;

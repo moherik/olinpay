@@ -40,7 +40,7 @@ function isActive(pathname: string, href: string) {
 /* Static stand-in while the path is not yet known. It carries no active state. */
 function NavFallback() {
   return (
-    <ul aria-hidden="true" className="flex items-center gap-1 px-4 lg:px-6">
+    <ul aria-hidden="true" className="flex items-center gap-1">
       {navItems.map((item) => (
         <li key={item.href} className="flex h-10 items-center px-2.5 text-[13px] text-muted">
           {item.label}
@@ -53,10 +53,7 @@ function NavFallback() {
 function NavLinks() {
   const pathname = usePathname();
   return (
-    <nav
-      aria-label="Admin sections"
-      className="flex items-center gap-1 overflow-x-auto px-4 lg:px-6"
-    >
+    <nav aria-label="Admin sections" className="flex items-center gap-1 overflow-x-auto">
       {navItems.map((item) => {
         const active = isActive(pathname, item.href);
         return (
@@ -198,9 +195,17 @@ function AccountMenu() {
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const { environment } = useApp();
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-40 border-b border-border bg-surface">
+      <header
+        className={cn(
+          "sticky top-0 z-40 border-b border-border",
+          environment === "production"
+            ? "bg-production-wash"
+            : "bg-sandbox-wash",
+        )}
+      >
         <div className="mx-auto flex h-12 max-w-[1320px] items-center justify-between gap-3 px-4 lg:px-6">
           <div className="flex items-center gap-3">
             <Link
@@ -222,7 +227,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <AccountMenu />
         </div>
-        <SuspendedNav />
+        <div className="mx-auto max-w-[1320px] px-4 lg:px-6">
+          <SuspendedNav />
+        </div>
       </header>
       <main className="mx-auto max-w-[1320px] px-4 py-5 lg:px-6">
         {children}
