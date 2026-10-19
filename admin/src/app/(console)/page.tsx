@@ -113,29 +113,14 @@ export default function OverviewPage() {
       />
 
       <div className="grid gap-4">
-        <Panel>
-          <PanelHeader
-            title="Needs attention"
-            hint="Items an operator would act on next."
-          />
-          <PanelBody className="flex flex-col gap-3">
-            <AttentionRow
-              severity={overview.attention.failed_deliveries > 0 ? "danger" : "ok"}
-              label="Failed webhook deliveries"
-              value={`${overview.attention.failed_deliveries} in ${environment}`}
-              href="/webhooks"
-              action="Open outbound deliveries"
+        {unknown.length > 0 ? (
+          <Panel>
+            <PanelHeader
+              title="Needs attention"
+              hint="Items an operator would act on next."
             />
-            {unknown.length === 0 ? (
-              <AttentionRow
-                severity="ok"
-                label="Transactions awaiting reconciliation"
-                value="No unknown outcomes"
-                href="/transactions?q=&status=unknown"
-                action="Check unknown payments"
-              />
-            ) : (
-              unknown.slice(0, 3).map((row) => (
+            <PanelBody className="flex flex-col gap-3">
+              {unknown.slice(0, 3).map((row) => (
                 <AttentionRow
                   key={row.id}
                   severity="warn"
@@ -144,10 +129,10 @@ export default function OverviewPage() {
                   href={`/transactions/${row.id}`}
                   action="Inspect payment"
                 />
-              ))
-            )}
-          </PanelBody>
-        </Panel>
+              ))}
+            </PanelBody>
+          </Panel>
+        ) : <></>}
 
         <Panel>
           <PanelHeader

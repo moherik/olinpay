@@ -203,7 +203,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           "sticky top-0 z-40 border-b border-border",
           environment === "production"
             ? "bg-production-wash"
-            : "bg-sandbox-wash",
+            : "bg-yellow-500",
         )}
       >
         <div className="flex h-12 items-center justify-between gap-3 px-4 lg:px-6">
@@ -223,15 +223,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 AwsemPay
               </span>
             </Link>
-            <EnvironmentSwitch />
           </div>
-          <AccountMenu />
+          <div className="flex items-center gap-3">
+            <EnvironmentSwitch />
+            <AccountMenu />
+          </div>
         </div>
         <div className="flex h-full items-center px-4 lg:px-6">
           <SuspendedNav />
         </div>
       </header>
-      <main className="mx-auto max-w-[1320px] px-4 py-5 lg:px-6">
+      <main className="mx-auto max-w-330 px-4 py-5 lg:px-6">
         {children}
       </main>
     </div>

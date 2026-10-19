@@ -51,10 +51,6 @@ tidy: ## Tidy go.mod / go.sum
 migrate: ## Apply database migrations
 	go run $(MAIN) migrate
 
-.PHONY: seed
-seed: ## Create a demo merchant and print its API key
-	go run $(MAIN) seed --name "Demo Merchant" --callback-url "http://localhost:9090/hooks/openpay"
-
 .PHONY: up
 up: ## Start the local PostgreSQL via docker compose
 	docker compose up -d postgres
@@ -112,9 +108,8 @@ reset-onboarding: ## ⚠ Destructive: wipe ALL data and go back to the first-ins
 		sleep 1; \
 	done
 	@$(MAKE) migrate
-	@$(MAKE) seed
 	@echo ""
-	@echo "  Database wiped and reseeded."
+	@echo "  Database wiped"
 	@$(MAKE) dev
 	@echo ""
 	@echo "  The console reports it has no account yet:"

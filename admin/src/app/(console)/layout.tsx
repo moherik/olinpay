@@ -67,31 +67,30 @@ export default function ConsoleLayout({
     };
   }, [auth.ready, refreshAuth, reloadMerchants, router]);
 
-  if (gateFailed) {
-    return (
-      <div className="flex min-h-dvh items-center justify-center p-6">
-        <p className="max-w-sm text-center text-[13px] text-secondary">
-          {gateFailed}
-        </p>
-      </div>
-    );
-  }
+  const sessionVerified = auth.ready && auth.authenticated;
 
-  if (!auth.ready) {
-    return (
-      <div className="flex min-h-dvh items-center justify-center">
-        <LoadingState label="Checking your session…" />
+  return (
+    <>
+      <div
+        aria-hidden={!sessionVerified}
+        className={sessionVerified ? undefined : "invisible"}
+        inert={!sessionVerified}
+      >
+        <AppShell>{children}</AppShell>
       </div>
-    );
-  }
-
-  if (!auth.authenticated) {
-    return (
-      <div className="flex min-h-dvh items-center justify-center">
-        <LoadingState label="Session expired — redirecting to sign in…" />
-      </div>
-    );
-  }
-
-  return <AppShell>{children}</AppShell>;
+      {!sessionVerified && (
+        <div className="fixed inset-0 z-50 flex min-h-dvh items-center justify-center bg-canvas p-6">
+          {gateFailed ? (
+            <p className="max-w-sm text-center text-[13px] text-secondary">
+              {gateFailed}
+            </p>
+          ) : auth.ready ? (
+            <LoadingState label="Session expired, redirecting to sign in…" />
+          ) : (
+            <LoadingState label="Checking your session…" />
+          )}
+        </div>
+      )}
+    </>
+  );
 }
