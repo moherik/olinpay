@@ -3,6 +3,8 @@ package core_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/moherik/openpay.id/internal/core"
@@ -126,7 +128,7 @@ func TestRouterFiltersByCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Order: %v", err)
 	}
-	got := dec.Candidates
+	got = dec.Candidates
 	if len(got) != 1 || got[0].Provider.Name() != "va" {
 		t.Errorf("va request routed to %v, want [va]", names(got))
 	}
@@ -374,4 +376,229 @@ func TestOrderForProviderResolvesEnvironmentInstance(t *testing.T) {
 	}); !errors.Is(err, domain.ErrNoRoute) {
 		t.Errorf("error = %v, want ErrNoRoute", err)
 	}
+}
+
+func TestRouterRejectsMatchingRule(t *testing.T) {
+	primary := &stubProvider{name: "winpay.sandbox", caps: provider.Capabilities{SupportsInquiry: true}}
+	fallback := &stubProvider{name: "mock", caps: provider.Capabilities{SupportsInquiry: true}}
+	registry := provider.NewRegistry()
+	registry.Add(primary)
+	registry.Add(fallback)
+
+	router := core.NewRouter(registry)
+	merchant := &domain.Merchant{ID: "m1", Routing: domain.RoutingConfig{
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{
+			{
+				Condition: domain.RoutingCondition{
+					Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "1000000",
+				},
+				Reject: &domain.RoutingReject{Status: 402, Code: "amount_not_supported", Message: "too large for this merchant"},
+			},
+			{
+				Condition: domain.RoutingCondition{
+					Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "1000",
+				},
+				Providers: []string{"winpay.sandbox"},
+			},
+		},
+	}}
+
+	// The first matching rule's reject terminates routing: the second rule's
+	// chain and the base chain are never consulted.
+	_, err := router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodQRIS, Amount: 5000000,
+	})
+	var rejected *domain.RejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("error = %v, want RejectedError", err)
+	}
+	if rejected.Status != 402 || rejected.Code != "amount_not_supported" || rejected.Message != "too large for this merchant" {
+		t.Errorf("rejected = %+v, want the configured identity", rejected)
+	}
+
+	// Below the threshold the reject does not fire.
+	dec, err := router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodQRIS, Amount: 5000,
+	})
+	if err != nil {
+		t.Fatalf("Decide below threshold: %v", err)
+	}
+	if got := names(dec.Candidates); !equal(got, []string{"winpay.sandbox", "mock"}) {
+		t.Errorf("candidates = %v, want [winpay.sandbox mock]", got)
+	}
+}
+
+func TestRouterEnrichesRequestBeforeRules(t *testing.T) {
+	primary := &stubProvider{name: "winpay.sandbox", caps: provider.Capabilities{SupportsInquiry: true}}
+	fallback := &stubProvider{name: "mock", caps: provider.Capabilities{SupportsInquiry: true}}
+	registry := provider.NewRegistry()
+	registry.Add(primary)
+	registry.Add(fallback)
+
+	// The enrichment stamps an acquirer the caller did not send; the rule on
+	// that metadata key must read the enriched value.
+	router := core.NewRouter(registry)
+	merchant := &domain.Merchant{ID: "m1", Routing: domain.RoutingConfig{
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Enrich: []domain.RoutingModify{
+			{Op: domain.ModifyOpSetMetadata, Key: "acquirer", Value: "winpay"},
+			{Op: domain.ModifyOpSetDescription, Value: "via openpay"},
+		},
+		Rules: []domain.RoutingRule{
+			{
+				Condition: domain.RoutingCondition{
+					Field: "metadata:acquirer", Operator: domain.ConditionOperatorEq, Value: "winpay",
+				},
+				Providers: []string{"winpay.sandbox"},
+			},
+		},
+	}}
+
+	dec, err := router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodQRIS, Amount: 15000,
+	})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := names(dec.Candidates); !equal(got, []string{"winpay.sandbox", "mock"}) {
+		t.Fatalf("candidates = %v, want rule chain first then base", got)
+	}
+	if dec.Metadata["acquirer"] != "winpay" {
+		t.Errorf("metadata = %v, want acquirer=winpay", dec.Metadata)
+	}
+	if dec.Description != "via openpay" {
+		t.Errorf("description = %q, want via openpay", dec.Description)
+	}
+}
+
+func TestRouterAppliesMatchingRuleModifies(t *testing.T) {
+	primary := &stubProvider{name: "winpay.sandbox", caps: provider.Capabilities{SupportsInquiry: true}}
+	fallback := &stubProvider{name: "mock", caps: provider.Capabilities{SupportsInquiry: true}}
+	registry := provider.NewRegistry()
+	registry.Add(primary)
+	registry.Add(fallback)
+
+	router := core.NewRouter(registry)
+	merchant := &domain.Merchant{ID: "m1", Routing: domain.RoutingConfig{
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{
+			{
+				Condition: domain.RoutingCondition{
+					Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "10000",
+				},
+				Apply: []domain.RoutingModify{
+					{Op: domain.ModifyOpSetMetadata, Key: "routed_via", Value: "high-value"},
+				},
+				Providers: []string{"winpay.sandbox"},
+			},
+		},
+	}}
+
+	dec, err := router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodQRIS, Amount: 15000,
+	})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if dec.Metadata["routed_via"] != "high-value" {
+		t.Errorf("metadata = %v, want routed_via=high-value", dec.Metadata)
+	}
+
+	// No match: the rule's edits must not leak into the decision.
+	dec, err = router.Decide(merchant, &core.RouteRequest{
+		MerchantID: "m1", Environment: domain.EnvironmentSandbox,
+		Method: provider.MethodQRIS, Amount: 100,
+	})
+	if err != nil {
+		t.Fatalf("Decide no match: %v", err)
+	}
+	if _, present := dec.Metadata["routed_via"]; present {
+		t.Errorf("metadata = %v, want no rule edits on a non-matching request", dec.Metadata)
+	}
+}
+
+// decliningProvider always refuses the create call, so the engine's failover
+// and post-chain handling can be exercised deterministically.
+type decliningProvider struct{ name string }
+
+func (d *decliningProvider) Name() string { return d.name }
+func (d *decliningProvider) Capabilities() provider.Capabilities {
+	return provider.Capabilities{Methods: []provider.Method{provider.MethodQRIS}, SupportsInquiry: true}
+}
+func (d *decliningProvider) CreatePayment(context.Context, *provider.CreatePaymentRequest) (*provider.CreatePaymentResponse, error) {
+	return nil, errors.New("declined by stub gateway")
+}
+func (d *decliningProvider) Inquiry(context.Context, *provider.InquiryRequest) (*provider.InquiryResponse, error) {
+	return nil, errors.New("declined by stub gateway")
+}
+func (d *decliningProvider) Cancel(context.Context, *provider.CancelRequest) (*provider.CancelResponse, error) {
+	return nil, errors.New("declined by stub gateway")
+}
+func (d *decliningProvider) ParseWebhook(context.Context, *provider.WebhookRequest) (*provider.WebhookEvent, error) {
+	return nil, errors.New("declined by stub gateway")
+}
+
+func TestEngineAnswersFallbackRejectWhenEveryProviderDeclines(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	declining := &decliningProvider{name: "winpay.sandbox"}
+	registry := provider.NewRegistry()
+	registry.Add(declining)
+	h.engine = core.New(core.Deps{
+		Registry:     registry,
+		Router:       core.NewRouter(registry),
+		Transactions: h.store.Transactions(),
+		Merchants:    h.store.Merchants(),
+		Notifier:     h.notifier,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	t.Run("with configured fallback reject", func(t *testing.T) {
+		h.merchant.Routing = domain.RoutingConfig{
+			Providers: []domain.RoutingProvider{{Name: "winpay.sandbox", Enabled: true}},
+			Reject:    &domain.RoutingReject{Status: 503, Code: "gateways_down", Message: "all gateways declined"},
+		}
+		if err := h.store.Merchants().Update(ctx, h.merchant); err != nil {
+			t.Fatalf("updating merchant: %v", err)
+		}
+
+		cmd := h.createCommand()
+		cmd.Method = provider.MethodQRIS
+		_, err := h.engine.CreatePayment(ctx, cmd)
+		var rejected *domain.RejectedError
+		if !errors.As(err, &rejected) {
+			t.Fatalf("error = %v, want RejectedError carrying the configured response", err)
+		}
+		if rejected.Status != 503 || rejected.Code != "gateways_down" || rejected.Message != "all gateways declined" {
+			t.Errorf("rejected = %+v, want the configured identity", rejected)
+		}
+
+		// No transaction may exist for a declined payment.
+		if _, gerr := h.store.Transactions().GetByReference(ctx, h.merchant.ID, "order-1"); !errors.Is(gerr, domain.ErrNotFound) {
+			t.Errorf("GetByReference error = %v, want ErrNotFound", gerr)
+		}
+	})
+
+	t.Run("without configured fallback reject", func(t *testing.T) {
+		h.merchant.Routing = domain.RoutingConfig{
+			Providers: []domain.RoutingProvider{{Name: "winpay.sandbox", Enabled: true}},
+		}
+		if err := h.store.Merchants().Update(ctx, h.merchant); err != nil {
+			t.Fatalf("updating merchant: %v", err)
+		}
+
+		cmd := h.createCommand()
+		cmd.Method = provider.MethodQRIS
+		_, err := h.engine.CreatePayment(ctx, cmd)
+		var rejected *domain.RejectedError
+		if err == nil || errors.As(err, &rejected) {
+			t.Fatalf("error = %v, want the plain provider failure", err)
+		}
+	})
 }

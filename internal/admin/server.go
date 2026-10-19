@@ -105,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 	// Public: authentication and bootstrap status.
 	r.Post("/api/login", s.login)
 	r.Get("/api/console-status", s.consoleStatus)
+	r.Post("/api/setup", s.setup)
 
 	// Everything below requires a live session.
 	r.Group(func(r chi.Router) {

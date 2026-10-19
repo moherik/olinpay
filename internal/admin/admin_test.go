@@ -695,6 +695,266 @@ func TestMerchantLifecycleAndRouting(t *testing.T) {
 	}
 }
 
+// TestSetupWizardInstallsFirstOwner drives POST /api/setup end to end: the
+// first install creates an owner, signs the browser in and locks the endpoint
+// afterwards.
+func TestSetupWizardInstallsFirstOwner(t *testing.T) {
+	f := setup(t)
+
+	// A fresh install reports that it needs setup.
+	var statusData struct {
+		Data struct {
+			NeedsSetup bool `json:"needs_setup"`
+		} `json:"data"`
+	}
+	var resp *http.Response
+	let := func(step string, status int, raw []byte, wantStatus int) {
+		t.Helper()
+		if status != wantStatus {
+			t.Fatalf("%s: status %d, want %d (%s)", step, status, wantStatus, raw)
+		}
+	}
+
+	status, _, raw := f.do(t, "GET", "/api/console-status", nil)
+	let("console status", status, raw, 200)
+	if err := json.Unmarshal(raw, &statusData); err != nil {
+		t.Fatalf("decoding console status: %v (%s)", err, raw)
+	}
+	if !statusData.Data.NeedsSetup {
+		t.Fatal("needs_setup = false, want true on a console without accounts")
+	}
+
+	// The wizard's account step: too short a password is refused.
+	status, _, raw = f.do(t, "POST", "/api/setup", map[string]string{
+		"name": "Owner", "email": "owner@new.test", "password": "short",
+	})
+	let("short password", status, raw, 400)
+
+	// The real install: account created (owner) and signed in.
+	status, resp, raw = f.do(t, "POST", "/api/setup", map[string]string{
+		"name": "Dewi Owner", "email": "dewi@new.test", "password": "correct horse battery",
+	})
+	let("setup", status, raw, 201)
+	var created struct {
+		Data struct {
+			User map[string]any `json:"user"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("decoding setup response: %v", err)
+	}
+	if created.Data.User["role"] != "owner" || created.Data.User["email"] != "dewi@new.test" {
+		t.Fatalf("created user: %v", created.Data.User)
+	}
+
+	// The setup response must carry the session cookie: the wizard's next
+	// steps run over the ordinary session-guarded endpoints.
+	var session *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "openpay_admin_session" && c.Value != "" {
+			session = c
+			break
+		}
+	}
+	if session == nil {
+		t.Fatal("setup response carries no session cookie")
+	}
+	status, _, raw = f.doRaw(t, session, "GET", "/api/me", nil)
+	let("me with setup cookie", status, raw, 200)
+
+	// The endpoint closed itself: a second install is a conflict.
+	status, _, _ = f.do(t, "POST", "/api/setup", map[string]string{
+		"name": "Second", "email": "second@new.test", "password": "another password",
+	})
+	if status != 409 {
+		t.Fatalf("second setup: status %d, want 409 setup_completed", status)
+	}
+
+	// Console status flips and ordinary login works with the new credential.
+	status, _, raw = f.do(t, "GET", "/api/console-status", nil)
+	let("console status after setup", status, raw, 200)
+	if err := json.Unmarshal(raw, &statusData); err != nil {
+		t.Fatalf("decoding console status: %v", err)
+	}
+	if statusData.Data.NeedsSetup {
+		t.Fatal("needs_setup = true after setup")
+	}
+
+	status, _, raw = f.do(t, "POST", "/api/login", map[string]string{
+		"email": "dewi@new.test", "password": "correct horse battery",
+	})
+	let("login after setup", status, raw, 200)
+}
+
+// TestMerchantIDsUseAWPrefix pins the public merchant identifier contract:
+// new merchants get short AW-prefixed IDs (max 10 characters) instead of the
+// pre-format mch_ UUIDs.
+func TestMerchantIDsUseAWPrefix(t *testing.T) {
+	f := setup(t)
+	cookie := f.loginAs(t, "operator@console.test", "operator")
+
+	status, data := f.doWith(t, cookie, "POST", "/api/merchants", map[string]string{
+		"name": "Shape Merchant", "callback_url": "https://shape.test/hook",
+	})
+	if status != 201 {
+		t.Fatalf("create merchant: status %d", status)
+	}
+	created, _ := data["data"].(map[string]any)
+	mid, _ := created["id"].(string)
+	if !id.MatchesMerchantIDShape(mid) {
+		t.Fatalf("created merchant id %q, want an AW-prefixed id of at most %d characters", mid, id.MerchantIDLength)
+	}
+}
+
+func TestMerchantRoutingModifyAndRejectValidation(t *testing.T) {
+	f := setup(t)
+	cookie := f.loginAs(t, "operator@console.test", "operator")
+
+	status, data := f.doWith(t, cookie, "POST", "/api/merchants", map[string]string{
+		"name": "Reject Merchant", "callback_url": "https://reject.test/hook",
+	})
+	if status != 201 {
+		t.Fatalf("create merchant: status %d", status)
+	}
+	id := data["data"].(map[string]any)["id"].(string)
+
+	put := func(cfg domain.RoutingConfig) map[string]any {
+		t.Helper()
+		status, data := f.doWith(t, cookie, "PUT", "/api/merchants/"+id+"/routing", cfg)
+		return map[string]any{"status": status, "data": data}
+	}
+
+	// A shape-matching label keeps the failures readable.
+	expect := func(step string, res map[string]any, wantStatus int) map[string]any {
+		t.Helper()
+		if res["status"].(int) != wantStatus {
+			t.Fatalf("%s: status %d, want %d (body: %v)", step, res["status"].(int), wantStatus, res["data"])
+		}
+		return res["data"].(map[string]any)
+	}
+
+	// A rejecting rule stores cleanly.
+	expect("reject rule", put(domain.RoutingConfig{
+		Strategy:  domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{{
+			Condition: domain.RoutingCondition{
+				Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "1000000",
+			},
+			Reject: &domain.RoutingReject{Status: 402, Code: "amount_not_supported", Message: "amount too large"},
+		}},
+	}), 200)
+
+	// The stored rule carries the reject identity back out.
+	status, data = f.doWith(t, cookie, "GET", "/api/merchants/"+id, nil)
+	if status != 200 {
+		t.Fatalf("get merchant: status %d", status)
+	}
+	routing := data["data"].(map[string]any)["routing"].(map[string]any)
+	rules, _ := routing["rules"].([]any)
+	if len(rules) != 1 {
+		t.Fatalf("rules = %v, want the rejecting rule", routing["rules"])
+	}
+	rej, _ := rules[0].(map[string]any)["reject"].(map[string]any)
+	if rej == nil || rej["code"] != "amount_not_supported" {
+		t.Fatalf("stored rule reject = %v, want amount_not_supported", rules[0])
+	}
+	if int(rej["status"].(float64)) != 402 {
+		t.Errorf("stored reject status = %v, want 402", rej["status"])
+	}
+
+	// A rule cannot route and reject at the same time.
+	expect("reject+providers", put(domain.RoutingConfig{
+		Strategy:  domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{{
+			Condition: domain.RoutingCondition{
+				Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "1",
+			},
+			Providers: []string{"mock"},
+			Reject:    &domain.RoutingReject{Status: 402, Code: "confused", Message: "x"},
+		}},
+	}), 400)
+
+	// The reject identity must stay in the error range.
+	expect("reject status 200", put(domain.RoutingConfig{
+		Strategy:  domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{{
+			Condition: domain.RoutingCondition{
+				Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "1",
+			},
+			Reject: &domain.RoutingReject{Status: 200, Code: "ok", Message: "x"},
+		}},
+	}), 400)
+	expect("reject missing code", put(domain.RoutingConfig{
+		Strategy:  domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{{
+			Condition: domain.RoutingCondition{
+				Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "1",
+			},
+			Reject: &domain.RoutingReject{Status: 402, Code: "  ", Message: "x"},
+		}},
+	}), 400)
+
+	// Modify operations must be known and complete.
+	expect("apply unknown op", put(domain.RoutingConfig{
+		Strategy:  domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{{
+			Condition: domain.RoutingCondition{
+				Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "1",
+			},
+			Apply:     []domain.RoutingModify{{Op: "delete_all", Value: "x"}},
+			Providers: []string{"mock"},
+		}},
+	}), 400)
+	expect("apply missing key", put(domain.RoutingConfig{
+		Strategy:  domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Rules: []domain.RoutingRule{{
+			Condition: domain.RoutingCondition{
+				Field: domain.ConditionFieldAmount, Operator: domain.ConditionOperatorGte, Value: "1",
+			},
+			Apply:     []domain.RoutingModify{{Op: domain.ModifyOpSetMetadata, Key: "  ", Value: "x"}},
+			Providers: []string{"mock"},
+		}},
+	}), 400)
+
+	// Enrichment and the config-level fallback reject store cleanly.
+	enrichAndReject := domain.RoutingConfig{
+		Strategy:  domain.StrategyPriority,
+		Providers: []domain.RoutingProvider{{Name: "mock", Enabled: true}},
+		Enrich: []domain.RoutingModify{
+			{Op: domain.ModifyOpSetMetadata, Key: "acquirer", Value: "winpay"},
+			{Op: domain.ModifyOpSetDescription, Value: "via openpay"},
+		},
+		Reject: &domain.RoutingReject{Status: 503, Code: "gateways_down", Message: "all gateways declined"},
+	}
+	expect("enrich + config reject", put(enrichAndReject), 200)
+	// The fallback reject identity round-trips too.
+	status, data = f.doWith(t, cookie, "GET", "/api/merchants/"+id, nil)
+	if status != 200 {
+		t.Fatalf("get merchant after enrich/reject: status %d", status)
+	}
+	routing = data["data"].(map[string]any)["routing"].(map[string]any)
+	if got := routing["reject"].(map[string]any); got["code"] != "gateways_down" {
+		t.Errorf("stored config reject = %v, want gateways_down", routing["reject"])
+	}
+	if len(routing["enrich"].([]any)) != 2 {
+		t.Errorf("stored enrich = %v, want two edits", routing["enrich"])
+	}
+
+	// Out-of-range fallback reject.
+	enrichAndReject.Reject = &domain.RoutingReject{Status: 302, Code: "hop", Message: "x"}
+	expect("config reject status 302", put(enrichAndReject), 400)
+	// Unknown enrichment op.
+	enrichAndReject.Reject = nil
+	enrichAndReject.Enrich = []domain.RoutingModify{{Op: "wipe", Value: "x"}}
+	expect("enrich unknown op", put(enrichAndReject), 400)
+}
+
 // --- users ------------------------------------------------------------------
 
 func TestUserInviteReturnsOneTimePassword(t *testing.T) {

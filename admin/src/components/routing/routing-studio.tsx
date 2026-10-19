@@ -32,8 +32,11 @@ import {
   methodOptions,
   operatorOptions,
   opSym,
+  statusOptionsRespond,
   type ConditionField,
   type ConditionOperator,
+  type ModifyItem,
+  type RejectPayload,
   type RoutingGraph,
   type RoutingNode,
   type RoutingNodeData,
@@ -51,12 +54,16 @@ const methodOptionsForCondition = [{ value: "", label: "Select method" }, ...met
 
 /**
  * Visual routing editor for one merchant in one environment. The graph is the
- * decision the engine executes: conditions branch on amount, method, channel,
- * currency or request metadata (first match wins, evaluated top-down along the
- * no-match path), and provider nodes form chains — each condition's match
- * branch first, then the fallback chain for everything the conditions do not
- * catch or that declines. Saves through PUT /merchants/{id}/routing; every
- * provider node must name a live instance for the environment.
+ * decision the engine executes: modify nodes right after the entry edit every
+ * request before rule evaluation, conditions branch on amount, method,
+ * channel, currency or request metadata (first match wins, evaluated top-down
+ * along the no-match path), each match branch may edit the request further
+ * through its own modify nodes, end in providers (a failover chain) or in a
+ * respond node (the rule rejects the payment without a gateway call), and
+ * provider nodes on the main path form the fallback chain, optionally ending
+ * in a respond node for payments the whole chain declines. Saves through
+ * PUT /merchants/{id}/routing; every provider node must name a live instance
+ * for the environment.
  */
 export function RoutingStudio({
   merchantId,
@@ -74,7 +81,14 @@ export function RoutingStudio({
   routing: {
     strategy: string;
     providers: { name: string; enabled: boolean }[];
-    rules: { condition: { field: string; operator: string; value: string }; providers: string[] }[];
+    rules: {
+      condition: { field: string; operator: string; value: string };
+      providers: string[];
+      apply?: ModifyItem[];
+      reject?: RejectPayload;
+    }[];
+    enrich?: ModifyItem[];
+    reject?: RejectPayload;
   };
   providers: RawProviderEntry[];
   canManage: boolean;
@@ -171,11 +185,12 @@ export function RoutingStudio({
     setSelectedId(null);
   }
 
-  function addNode(kind: "condition" | "provider") {
+  function addNode(kind: "condition" | "provider" | "modify" | "respond") {
     const entry = graph.nodes.find((n) => (n.data as RoutingNodeData).kind === "entry");
     const rightmost = graph.nodes.reduce((max, n) => Math.max(max, n.position.x), 0);
     const node = createNode(kind, { x: rightmost + 240, y: entry ? entry.position.y : 160 });
     if (kind === "provider") node.data.provider = { provider: "", enabled: true };
+    if (kind === "respond") node.data.respond = { status: 402, code: "", message: "" };
     setGraph((g) => ({ ...g, nodes: [...g.nodes, node] }));
     setSelectedId(node.id);
   }
@@ -183,12 +198,15 @@ export function RoutingStudio({
   async function save() {
     if (!canManage || compiled.issues.length > 0) return;
     setSaving(true);
+    const payload = {
+      strategy: compiled.strategy,
+      providers: compiled.providers,
+      rules: compiled.rules,
+      ...(compiled.enrich.length > 0 ? { enrich: compiled.enrich } : {}),
+      ...(compiled.reject ? { reject: compiled.reject } : {}),
+    };
     try {
-      await apiMutate("PUT", `/merchants/${merchantId}/routing`, {
-        strategy: compiled.strategy,
-        providers: compiled.providers,
-        rules: compiled.rules,
-      });
+      await apiMutate("PUT", `/merchants/${merchantId}/routing`, payload);
       notify(
         `Routing updated for ${merchantName}: ${compiled.rules.length} ${compiledRulesLabel(compiled.rules.length)}, ${compiled.providers.length} fallback ${compiled.providers.length === 1 ? "step" : "steps"} (${strategy}).`,
       );
@@ -308,6 +326,40 @@ export function RoutingStudio({
                   </svg>
                   <span>Add provider</span>
                 </Button>
+                <Button size="sm" variant="secondary" onClick={() => addNode("modify")} className="gap-1.5 px-2">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M4 9h16" />
+                    <path d="M4 15h10" />
+                  </svg>
+                  <span>Add modify</span>
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => addNode("respond")} className="gap-1.5 px-2">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M20 12a8 8 0 1 0-3 6.2" />
+                    <path d="M20 17v-5h-5" />
+                  </svg>
+                  <span>Add respond</span>
+                </Button>
               </div>
             ) : null}
           </PanelBody>
@@ -366,7 +418,13 @@ export function RoutingStudio({
         >
           <CodeBlock
             code={JSON.stringify(
-              { strategy: compiled.strategy, providers: compiled.providers, rules: compiled.rules },
+              {
+                strategy: compiled.strategy,
+                providers: compiled.providers,
+                rules: compiled.rules,
+                ...(compiled.enrich.length > 0 ? { enrich: compiled.enrich } : {}),
+                ...(compiled.reject ? { reject: compiled.reject } : {}),
+              },
               null,
               2,
             )}
@@ -607,6 +665,151 @@ function NodeConfig({
         </>
       )}
 
+      {d.kind === "modify" && (
+        <>
+          <Field label="Set description" htmlFor="routing-modify-description">
+            <Input
+              id="routing-modify-description"
+              aria-label="Modify description"
+              value={d.modify?.description ?? ""}
+              onChange={(e) =>
+                updateNode((dd) => ({ ...dd, modify: { ...(dd.modify ?? { description: "", metadata: [] }), description: e.target.value } }))
+              }
+              placeholder="Empty keeps the caller's description"
+              autoComplete="off"
+              disabled={!canManage}
+            />
+          </Field>
+          <p className="text-[12px] text-muted">Metadata edits</p>
+          {(d.modify?.metadata ?? []).map((row, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <Input
+                aria-label={`Modify metadata key ${i + 1}`}
+                value={row.key}
+                onChange={(e) =>
+                  updateNode((dd) => ({
+                    ...dd,
+                    modify: {
+                      ...(dd.modify ?? { description: "", metadata: [] }),
+                      metadata: (dd.modify?.metadata ?? []).map((r2, j) => (j === i ? { ...r2, key: e.target.value } : r2)),
+                    },
+                  }))
+                }
+                placeholder="key"
+                autoComplete="off"
+                disabled={!canManage}
+              />
+              <Input
+                aria-label={`Modify metadata value ${i + 1}`}
+                value={row.value}
+                onChange={(e) =>
+                  updateNode((dd) => ({
+                    ...dd,
+                    modify: {
+                      ...(dd.modify ?? { description: "", metadata: [] }),
+                      metadata: (dd.modify?.metadata ?? []).map((r2, j) => (j === i ? { ...r2, value: e.target.value } : r2)),
+                    },
+                  }))
+                }
+                placeholder="value"
+                autoComplete="off"
+                disabled={!canManage}
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Remove metadata row ${i + 1}`}
+                onClick={() =>
+                  updateNode((dd) => ({
+                    ...dd,
+                    modify: {
+                      ...(dd.modify ?? { description: "", metadata: [] }),
+                      metadata: (dd.modify?.metadata ?? [{ key: "", value: "" }]).filter((_, j) => j !== i),
+                    },
+                  }))
+                }
+                disabled={!canManage}
+              >
+                ×
+              </Button>
+            </div>
+          ))}
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label="Add metadata row"
+            onClick={() =>
+              updateNode((dd) => ({
+                ...dd,
+                modify: { ...(dd.modify ?? { description: "", metadata: [] }), metadata: [...(dd.modify?.metadata ?? []), { key: "", value: "" }] },
+              }))
+            }
+            disabled={!canManage}
+          >
+            + Add metadata
+          </Button>
+          <Field label="Sends to">
+            <SelectControl
+              ariaLabel="Modify sends to"
+              value={getTarget("out")}
+              onValueChange={(v) => setConn("out", v)}
+              options={[{ value: "", label: "End of graph" }, ...otherNodes]}
+              disabled={!canManage}
+              className="w-full"
+            />
+          </Field>
+          <p className="text-[12px] text-muted">
+            Directly after the entry, edits run for every request before conditions evaluate; inside a match branch, edits run for that rule
+            only, before its providers.
+          </p>
+        </>
+      )}
+
+      {d.kind === "respond" && (
+        <>
+          <Field label="HTTP status">
+            <SelectControl
+              ariaLabel="Respond status"
+              value={String(d.respond?.status ?? 402)}
+              onValueChange={(v) => updateNode((dd) => ({ ...dd, respond: { ...(dd.respond ?? { code: "", message: "" }), status: Number(v) } }))}
+              options={statusOptionsRespond}
+              disabled={!canManage}
+              className="w-full"
+            />
+          </Field>
+          <Field label="Error code" htmlFor="routing-respond-code">
+            <Input
+              id="routing-respond-code"
+              aria-label="Respond code"
+              value={d.respond?.code ?? ""}
+              onChange={(e) =>
+                updateNode((dd) => ({ ...dd, respond: { ...(dd.respond ?? { status: 402, message: "" }), code: e.target.value } }))
+              }
+              placeholder="e.g. country_not_supported"
+              autoComplete="off"
+              disabled={!canManage}
+            />
+          </Field>
+          <Field label="Message" htmlFor="routing-respond-message">
+            <Input
+              id="routing-respond-message"
+              aria-label="Respond message"
+              value={d.respond?.message ?? ""}
+              onChange={(e) =>
+                updateNode((dd) => ({ ...dd, respond: { ...(dd.respond ?? { status: 402, code: "" }), message: e.target.value } }))
+              }
+              placeholder="e.g. Payments from this country are not accepted"
+              autoComplete="off"
+              disabled={!canManage}
+            />
+          </Field>
+          <p className="text-[12px] text-muted">
+            This node never calls a gateway. On the payment API it answers the standard error shape: {"{ error: { code, message } }"} with the
+            status above. Inside a match branch it rejects that rule alone; past the fallback chain it answers when every provider declines.
+          </p>
+        </>
+      )}
+
       {d.kind !== "entry" && (
         <div className="pt-2">
           <Button size="sm" variant="danger" onClick={deleteSelected} disabled={!canManage}>
@@ -628,5 +831,9 @@ function nodeLabelText(n: RoutingNode) {
     return `${field} ${opSym(c.operator)} ${c.value || "?"}`;
   }
   if (d.kind === "provider") return d.provider?.provider || "Provider";
+  if (d.kind === "respond") {
+    const r = d.respond;
+    return r ? `Respond ${r.status} ${r.code || ""}`.trim() : "Respond";
+  }
   return d.label;
 }

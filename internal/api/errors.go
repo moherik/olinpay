@@ -38,6 +38,28 @@ func fail(w http.ResponseWriter, r *http.Request, err error, fallback string) {
 		return
 	}
 
+	// A routing respond/reject node answers with its own configured status,
+	// code and message instead of the standard error mapping. The stored
+	// status must be a 4xx/5xx (save-time validation enforces it); a stray
+	// stored value falls back to 422 so a reject can never ship as 2xx/3xx.
+	var rejected *domain.RejectedError
+	if errors.As(err, &rejected) {
+		respStatus := rejected.Status
+		if respStatus < http.StatusBadRequest || respStatus > 599 {
+			respStatus = http.StatusUnprocessableEntity
+		}
+		respCode := rejected.Code
+		if respCode == "" {
+			respCode = "routing_rejected"
+		}
+		respMessage := rejected.Message
+		if respMessage == "" {
+			respMessage = domain.ErrRejected.Error()
+		}
+		httpx.WriteError(w, respStatus, respCode, respMessage, "")
+		return
+	}
+
 	msg := fallback
 	if msg == "" {
 		msg = messageFor(err)

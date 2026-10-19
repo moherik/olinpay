@@ -251,18 +251,6 @@ function AccountMenu() {
   );
 }
 
-function SessionTag() {
-  const { auth } = useApp();
-  const label =
-    auth.ready && auth.authenticated ? "Connected to openpay.id API" : null;
-  if (!label) return null;
-  return (
-    <span className="hidden items-center rounded-[3px] border border-border bg-surface-muted px-2 py-1 text-[11px] font-medium text-secondary md:inline-flex">
-      {label}
-    </span>
-  );
-}
-
 function MobileNav() {
   const [open, setOpen] = useState(false);
   return (
@@ -309,17 +297,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <MobileNav />
             </div>
             <div className="hidden lg:block">
-              <SessionTag />
+              <EnvironmentSwitch />
             </div>
             <div className="flex items-center gap-2">
-              <EnvironmentSwitch />
               <AccountMenu />
             </div>
           </div>
         </div>
         <main className="mx-auto max-w-[1320px] px-4 py-5 lg:px-6">
           <div className="mb-4 lg:hidden">
-            <SessionTag />
+              <EnvironmentSwitch />
           </div>
           {children}
         </main>

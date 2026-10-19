@@ -13,6 +13,7 @@ import { SelectControl } from "@/components/ui/select";
 import { Tag } from "@/components/ui/status-tag";
 import { RoutingStudio } from "@/components/routing/routing-studio";
 import type { Environment } from "@/lib/demo-data";
+import type { ModifyItem, RejectPayload } from "@/lib/routing-graph";
 import { apiGet, ApiError, type RawProviderEntry } from "@/lib/api";
 
 type RawMerchantDetail = {
@@ -25,7 +26,14 @@ type RawMerchantDetail = {
   routing: {
     strategy: string;
     providers: { name: string; enabled: boolean; priority: number }[];
-    rules?: { condition: { field: string; operator: string; value: string }; providers: string[] }[];
+    rules?: {
+      condition: { field: string; operator: string; value: string };
+      providers: string[];
+      apply?: ModifyItem[];
+      reject?: RejectPayload;
+    }[];
+    enrich?: ModifyItem[];
+    reject?: RejectPayload;
   };
 };
 

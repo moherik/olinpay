@@ -1,16 +1,17 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Panel, PanelBody } from "@/components/ui/panel";
 import { useApp } from "@/components/shell/app-context";
-import { ApiError, apiMutate, fetchMe } from "@/lib/api";
+import { ApiError, apiMutate, fetchConsoleStatus, fetchMe } from "@/lib/api";
 
 /**
- * The only new screen in this build. Credentials verify against the backend's
+ * The only sign-in screen. Credentials verify against the backend's
  * bcrypt store; the API sets the HttpOnly session cookie on the response.
  */
 export default function LoginPage() {
@@ -20,13 +21,20 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   // An already-authenticated visitor skips the form entirely.
   useEffect(() => {
     fetchMe()
       .then(() => router.replace("/"))
-      .catch(() => {
-        /* staying on the form */
+      .catch(async () => {
+        // On a console with no account at all, the wizard is the way in.
+        try {
+          const status = await fetchConsoleStatus();
+          setNeedsSetup(status.data.needs_setup);
+        } catch {
+          /* the API is down; the form still renders with its own error */
+        }
       });
   }, [router, auth]);
 
@@ -62,6 +70,17 @@ export default function LoginPage() {
               Sign in with your console account. Sessions expire after 12 hours.
             </p>
           </div>
+          {needsSetup ? (
+            <div className="flex flex-col gap-2 rounded-panel border border-border bg-surface-muted px-3 py-2.5">
+              <p className="text-[12px] text-secondary">
+                This console has no account yet. Run the first-install setup to
+                create its owner.
+              </p>
+              <Button asChild variant="primary" size="sm">
+                <Link href="/setup">Set up openpay</Link>
+              </Button>
+            </div>
+          ) : null}
           <form className="flex flex-col gap-4" onSubmit={submit}>
             <Field
               label="Email"

@@ -119,14 +119,6 @@ func serve() error {
 	}
 	defer pool.Close()
 
-	registry, err := buildProviders(cfg, log)
-	if err != nil {
-		return err
-	}
-	if registry.Len() == 0 {
-		return errors.New("no providers configured; set OPENPAY_PROVIDERS (e.g. \"mock\")")
-	}
-
 	txRepo := postgres.NewTransactionRepository(pool)
 	merchantRepo := postgres.NewMerchantRepository(pool)
 	deliveryRepo := postgres.NewWebhookRepository(pool)
@@ -138,10 +130,13 @@ func serve() error {
 	providerCfgRepo := postgres.NewProviderConfigRepository(pool)
 	adminStats := postgres.NewAdminStore(pool)
 
-	// Provider credentials from the database are instantiated on top of any
-	// environment-configured providers. DB rows override env vars when they
-	// both target the same instance name.
-	buildProviderFromDB(providerCfgRepo, registry, log)
+	// The registry is built environment-first, then DB-stored credentials are
+	// instantiated on top: a deployment relying only on console-saved
+	// credentials therefore boots with an empty OPENPAY_PROVIDERS.
+	registry, err := buildRegistry(cfg, providerCfgRepo, log)
+	if err != nil {
+		return err
+	}
 
 	// Webhook engine (outbound) doubles as the core engine's notifier.
 	dispatcher := webhook.NewDispatcher(deliveryRepo, merchantRepo, cfg.Webhook, log)
@@ -264,6 +259,24 @@ func buildProviders(cfg *config.Config, log *slog.Logger) (*provider.Registry, e
 			return nil, fmt.Errorf("building provider %q: %w", name, err)
 		}
 		log.Info("provider registered", "name", name)
+	}
+	return registry, nil
+}
+
+// buildRegistry assembles the provider registry: every provider listed in
+// OPENPAY_PROVIDERS is built from the environment, then DB-stored credentials
+// (console-saved) are instantiated on top. The empty-registry check runs after
+// the database build so a console-managed deployment boots without
+// OPENPAY_PROVIDERS at all.
+func buildRegistry(cfg *config.Config, repo repository.ProviderConfigRepository, log *slog.Logger) (*provider.Registry, error) {
+	registry, err := buildProviders(cfg, log)
+	if err != nil {
+		return nil, err
+	}
+	buildProviderFromDB(repo, registry, log)
+	if registry.Len() == 0 {
+		return nil, errors.New(
+			"no providers configured; register one in the admin console (Providers page) or set OPENPAY_PROVIDERS (e.g. \"mock\")")
 	}
 	return registry, nil
 }
@@ -432,8 +445,12 @@ func seed(args []string) error {
 	}
 
 	now := time.Now()
+	merchantID, err := id.NewMerchantID()
+	if err != nil {
+		return err
+	}
 	merchant := &domain.Merchant{
-		ID:            id.NewPrefixed("mch"),
+		ID:            merchantID,
 		Name:          *name,
 		APIKeyHash:    id.HashAPIKey(resolvedKey, cfg.APIKeyPepper),
 		APIKeyPrefix:  id.APIKeyPrefix(resolvedKey),

@@ -79,6 +79,11 @@ func (s *Server) createMerchant(w http.ResponseWriter, r *http.Request) {
 		invalidField(w, "name", "name is required")
 		return
 	}
+	merchantID, err := id.NewMerchantID()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "cannot generate merchant id")
+		return
+	}
 	secret, err := newWebhookSecret()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "cannot generate webhook secret")
@@ -86,7 +91,7 @@ func (s *Server) createMerchant(w http.ResponseWriter, r *http.Request) {
 	}
 	now := s.now()
 	m := &domain.Merchant{
-		ID:            s.newID("mch"),
+		ID:            merchantID,
 		Name:          name,
 		CallbackURL:   strings.TrimSpace(body.CallbackURL),
 		WebhookSecret: secret,
@@ -217,6 +222,14 @@ func (s *Server) saveRouting(w http.ResponseWriter, r *http.Request) {
 		invalidField(w, "rules", err.Error())
 		return
 	}
+	if err := validateModifies(body.Enrich, "enrich"); err != nil {
+		invalidField(w, "enrich", err.Error())
+		return
+	}
+	if err := validateReject(body.Reject, "reject"); err != nil {
+		invalidField(w, "reject", err.Error())
+		return
+	}
 	if body.Rules == nil {
 		body.Rules = []domain.RoutingRule{}
 	}
@@ -292,7 +305,18 @@ func validateRoutingRules(rules []domain.RoutingRule, registry *provider.Registr
 		if strings.TrimSpace(cond.Value) == "" {
 			return fmt.Errorf("%s condition value is required", label)
 		}
-
+		if err := validateModifies(rule.Apply, label); err != nil {
+			return err
+		}
+		if rule.Reject != nil {
+			if len(rule.Providers) > 0 {
+				return fmt.Errorf("%s cannot both route to providers and reject", label)
+			}
+			if err := validateReject(rule.Reject, label); err != nil {
+				return err
+			}
+			continue
+		}
 		if len(rule.Providers) == 0 {
 			return fmt.Errorf("%s routes to no provider — remove the rule or pick at least one", label)
 		}
@@ -330,6 +354,57 @@ func stringOperator(op string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// validateModifies checks one routing modify list before it is stored. An
+// operation the engine would silently skip (unknown op, missing metadata key)
+// corrupts what the merchant believes routing does to the request.
+func validateModifies(modifies []domain.RoutingModify, label string) error {
+	for i, m := range modifies {
+		what := fmt.Sprintf("%s modify %d", label, i+1)
+		switch m.Op {
+		case domain.ModifyOpSetMetadata:
+			if strings.TrimSpace(m.Key) == "" {
+				return fmt.Errorf("%s (set_metadata) needs a metadata key", what)
+			}
+			if !metadataKeyPattern.MatchString(m.Key) {
+				return fmt.Errorf("%s metadata key %q may only contain letters, digits, '_' and '-'", what, m.Key)
+			}
+		case domain.ModifyOpSetDescription:
+			if strings.TrimSpace(m.Value) == "" {
+				return fmt.Errorf("%s (set_description) needs a value", what)
+			}
+		default:
+			return fmt.Errorf("%s operation must be %s or %s", what, domain.ModifyOpSetMetadata, domain.ModifyOpSetDescription)
+		}
+	}
+	return nil
+}
+
+// validateReject checks a routing reject definition. The status must be in the
+// error range: a reject only ever answers a payment that is not accepted, so
+// the API layer can safely trust the stored value to be 4xx/5xx.
+func validateReject(rej *domain.RoutingReject, label string) error {
+	if rej == nil {
+		return nil
+	}
+	if rej.Status < http.StatusBadRequest || rej.Status > 599 {
+		return fmt.Errorf("%s status must be 400..599", label)
+	}
+	code := strings.TrimSpace(rej.Code)
+	if code == "" {
+		return fmt.Errorf("%s code is required", label)
+	}
+	if strings.ContainsAny(code, " \t\r\n") || len(code) > 64 {
+		return fmt.Errorf("%s code must be one word of at most 64 characters", label)
+	}
+	if strings.TrimSpace(rej.Message) == "" {
+		return fmt.Errorf("%s message is required", label)
+	}
+	if len(strings.TrimSpace(rej.Message)) > 500 {
+		return fmt.Errorf("%s message must be at most 500 characters", label)
+	}
+	return nil
 }
 
 // metadataKeyPattern restricts rule metadata keys to URL/JSON-friendly

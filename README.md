@@ -127,10 +127,14 @@ make up
 make migrate
 
 # 4. create a merchant; note the printed API key
+#    (merchant IDs look like AW239823 — AW prefix, max 10 characters)
 make seed
 
 # 5. run the servers (API on :8080, webhook engine on :8081)
 make run
+
+# later, to abandon local data and return to the first-install wizard:
+# make reset-onboarding          # destructive — asks you to type RESET
 ```
 
 Create a payment:
@@ -175,9 +179,22 @@ same-origin and HttpOnly.
 ```bash
 # console on :3000 — backend must be running
 cd admin && npm install && npm run dev
-# sign in with a bootstrap account:
+# first install: the console walks through owner account, first gateway and
+# first merchant — or create a bootstrap account from the CLI:
 openpay create-admin --email owner@example.com --role owner
 ```
+
+On the very first open, `/setup` hosts the **first-install wizard**: while no
+console account exists, `GET /admin/api/console-status` reports
+`needs_setup: true`, the login page links to the wizard, and
+`POST /admin/api/setup` creates the owner (name, email, password ≥10 chars)
+and signs the browser in immediately — the wizard then offers three one-time
+shortcuts over the normal authenticated API: first gateway credentials
+(`PUT /providers/{name}/config`, adapter-validated), and the first merchant
+plus its sandbox API key (both one-time secrets shown once). Every wizard
+step after the account is skippable. Once any account exists the setup
+endpoint answers `409 setup_completed` — `openpay create-admin` remains the
+equivalent CLI path and starts refusing too.
 
 It covers transaction search and cancel, merchant lifecycle and routing,
 API keys, provider credentials (stored in PostgreSQL, hot-reloaded into the
@@ -339,7 +356,8 @@ func (p *Provider) Cancel(ctx context.Context, req *provider.CancelRequest) (*pr
 func (p *Provider) ParseWebhook(ctx context.Context, req *provider.WebhookRequest) (*provider.WebhookEvent, error) { ... }
 ```
 
-Then enable it:
+Then enable it (the console's Providers page, or `OPENPAY_PROVIDERS` plus the
+`OPENPAY_PROVIDER_<NAME>_<KEY>` env vars):
 
 ```bash
 # .env
@@ -384,17 +402,12 @@ the mock provider fakes:
   `contractId` (and a VA number) it returned at creation; the adapter keeps a
   short-lived cache of those, since the unified contract does not carry them.
 
-It supports Virtual Accounts, QRIS and eWallets. Enable it with:
-
-```bash
-# .env
-OPENPAY_PROVIDERS=mock,winpay
-OPENPAY_PROVIDER_WINPAY_PARTNER_ID=962489e9-de5d-4eb7-92a4-b07d44d64bf4
-OPENPAY_PROVIDER_WINPAY_PRIVATE_KEY=MIIEowIBAAKCAQB5jAWUddv1tZW6...   # PEM or base64 DER
-OPENPAY_PROVIDER_WINPAY_PUBLIC_KEY=MIGeMA0GCSqGSIb3DQEBAQUAA4GMADCBiAKBgHGK...
-OPENPAY_PROVIDER_WINPAY_BASE_URL=https://sandbox-snap.winpay.id
-OPENPAY_PROVIDER_WINPAY_CALLBACK_URL=https://openpay.example/webhooks/winpay
-```
+It supports Virtual Accounts, QRIS and eWallets. Enable it from the console's
+Providers page: save `partner_id` and `private_key` for the sandbox
+environment, plus `public_key`, `base_url` and `callback_url` as needed. The
+credentials are stored in the database and hot-reload without a restart. The
+`OPENPAY_PROVIDER_WINPAY_*` environment variables carry the same keys for a
+bare deployment.
 
 Point Winpay's merchant callback at `POST /webhooks/winpay`. Leave
 `PUBLIC_KEY` empty to skip signature verification (development only).
@@ -433,14 +446,10 @@ It demonstrates the parts a real Core API integration needs:
   and a non-2xx `status_code` (for example `406` for a duplicate order id), so
   the adapter inspects the body `status_code` rather than the transport status.
 
-Enable it with:
-
-```bash
-# .env
-OPENPAY_PROVIDERS=mock,midtrans
-OPENPAY_PROVIDER_MIDTRANS_SERVER_KEY=SB-Mid-server-xxxxxxxxxxxxxxxx
-OPENPAY_PROVIDER_MIDTRANS_BASE_URL=https://api.sandbox.midtrans.com
-```
+Enable it from the console's Providers page by saving `server_key` (plus
+`base_url`, `qris_acquirer` or callback URLs as needed) per environment; the
+`OPENPAY_PROVIDER_MIDTRANS_*` environment variables remain available for a
+bare deployment.
 
 Point Midtrans' notification URL at `POST /webhooks/midtrans`. Per-payment
 `metadata` can carry `va_number` (VA only), `return_url` (e-wallet only) and
@@ -479,20 +488,11 @@ It demonstrates the parts a real BI-SNAP integration needs:
   production deployment would persist these identifiers alongside the
   transaction.
 
-Enable it with:
-
-```bash
-# .env
-OPENPAY_PROVIDERS=mock,midtrans-snap
-OPENPAY_PROVIDER_MIDTRANS_SNAP_CLIENT_ID=<client id>
-OPENPAY_PROVIDER_MIDTRANS_SNAP_CLIENT_SECRET=<client secret>
-OPENPAY_PROVIDER_MIDTRANS_SNAP_PRIVATE_KEY=<PEM or base64 DER>
-OPENPAY_PROVIDER_MIDTRANS_SNAP_PUBLIC_KEY=<Midtrans public key>   # for callback verification
-OPENPAY_PROVIDER_MIDTRANS_SNAP_PARTNER_ID=<X-PARTNER-ID>
-OPENPAY_PROVIDER_MIDTRANS_SNAP_MERCHANT_ID=<merchant id>          # VA; default QRIS merchant id
-OPENPAY_PROVIDER_MIDTRANS_SNAP_PARTNER_SERVICE_ID=<8-char BIN>    # VA only
-OPENPAY_PROVIDER_MIDTRANS_SNAP_BASE_URL=https://merchants.sbx.midtrans.com
-```
+Enable it from the console's Providers page by saving the credentials per
+environment: `client_id`, `client_secret` and `private_key` are required;
+`public_key`, `partner_id`, `merchant_id`, `partner_service_id` and `base_url`
+are per-gateway additions. The `OPENPAY_PROVIDER_MIDTRANS_SNAP_*` environment
+variables remain available for a bare deployment.
 
 Point Midtrans' notification URL at `POST /webhooks/midtrans-snap`. Two values
 are passed per payment through `metadata`:
@@ -547,16 +547,10 @@ It demonstrates the parts a real Payments API v3 integration needs:
 - **Escape hatch** — channel-specific fields (for example an OVO account number)
   can be passed in `metadata.channel_properties` as a JSON object.
 
-Enable it with:
-
-```bash
-# .env
-OPENPAY_PROVIDERS=mock,xendit
-OPENPAY_PROVIDER_XENDIT_SECRET_KEY=xnd_development_xxxxxxxxxxxxxxxx
-OPENPAY_PROVIDER_XENDIT_BASE_URL=https://api.xendit.co
-OPENPAY_PROVIDER_XENDIT_CALLBACK_TOKEN=xxxxxxxxxxxxxxxx
-OPENPAY_PROVIDER_XENDIT_RETURN_URL=https://shop.example/payment/done
-```
+Enable it from the console's Providers page by saving `secret_key` (and
+`callback_token`, so inbound callbacks are verified) per environment. The
+`OPENPAY_PROVIDER_XENDIT_*` environment variables remain available for a bare
+deployment.
 
 Point Xendit's webhook URL at `POST /webhooks/xendit` and set the same
 verification token as `CALLBACK_TOKEN`. Test and live mode share the
@@ -595,18 +589,11 @@ integration needs:
   keeps a short-lived cache of those, since the unified contract does not carry
   them.
 
-Enable it with:
-
-```bash
-# .env
-OPENPAY_PROVIDERS=mock,doku
-OPENPAY_PROVIDER_DOKU_CLIENT_ID=MCH-0001-xxxxxxxx
-OPENPAY_PROVIDER_DOKU_CLIENT_SECRET=SK-xxxxxxxxxxxxxxxx
-OPENPAY_PROVIDER_DOKU_PRIVATE_KEY=MIIEowIBAAKCAQB5jAWUddv1tZW6...   # PEM or base64 DER
-OPENPAY_PROVIDER_DOKU_BASE_URL=https://api-sandbox.doku.com
-OPENPAY_PROVIDER_DOKU_PARTNER_SERVICE_ID="   19008"
-OPENPAY_PROVIDER_DOKU_CALLBACK_URL=https://openpay.example/webhooks/doku
-```
+Enable it from the console's Providers page by saving `client_id`,
+`client_secret`, `private_key` and `partner_service_id` per environment
+(`merchant_id`, `terminal_id` and `postal_code` matter for QRIS). The
+`OPENPAY_PROVIDER_DOKU_*` environment variables remain available for a bare
+deployment.
 
 Point DOKU's **Notification URL** at `POST /webhooks/doku`. Use
 `https://api.doku.com` as `BASE_URL` in production. DOKU does not expose a
@@ -653,12 +640,23 @@ still falls through the base chain on a hard decline:
   "providers": [
     {"name": "mock", "priority": 1, "enabled": true}
   ],
+  "enrich": [
+    {"op": "set_metadata", "key": "source", "value": "openpay"}
+  ],
   "rules": [
     {
-      "condition": {"field": "amount", "operator": "gte", "value": "10000"},
+      "condition": {"field": "metadata:acquirer", "operator": "eq", "value": "winpay"},
+      "apply": [
+        {"op": "set_metadata", "key": "routed_via", "value": "rule-winpay"}
+      ],
       "providers": ["winpay.sandbox"]
+    },
+    {
+      "condition": {"field": "amount", "operator": "gte", "value": "1000000"},
+      "reject": {"status": 402, "code": "amount_not_supported", "message": "Amount too large for this merchant."}
     }
-  ]
+  ],
+  "reject": {"status": 503, "code": "gateways_down", "message": "All gateways declined the payment."}
 }
 ```
 
@@ -668,13 +666,45 @@ rupiah for IDR per the create-payment contract; `gte`/`lte`/`eq`/`neq`),
 entry from the request — a rule never fires on requests missing that key).
 Operators: `eq`, `neq`, and `gte`/`lte` on `amount`.
 
-The admin API validates rules on save (known field, allowed operator, integer
-amounts, live provider instances). The console's routing page edits them as
-**condition nodes in the visual graph**: a condition's match branch is the
-rule's provider chain, the no-match branch continues to the next condition or
-the fallback chain. Conditions must sit before the fallback providers — rules
-are evaluated before the fallback chain, so the visual order matches runtime
-order.
+#### Request edits (`enrich`, `apply`)
+
+Modify operations edit the payment request before it reaches a condition or a
+gateway:
+
+- `enrich` entries run **before rule evaluation**, so conditions can read the
+  enriched values. Config-level edits apply to every payment.
+- `apply` entries inside a rule run **when that rule matches**, before its
+  provider chain is called.
+- Ops: `set_metadata` (`key` + `value`) and `set_description` (`value`). Edits
+  apply in list order to the transaction and the provider request alike.
+
+#### Custom responses (`reject`)
+
+A reject answers the payment API with the merchant's own identity instead of a
+gateway error. Three places:
+
+- **rule `reject`** — the first matching rule with a `reject` terminates
+  routing immediately; the payment is answered without touching any provider.
+- **config-level `reject`** — when every provider in the chain fails to create
+  the payment, the configured response answers instead of the raw gateway
+  error.
+- The payment API returns the stored `status` with the standard error envelope
+  `{"error": {"code": ..., "message": ...}}`. A stored reject must be a 4xx/5xx
+  (validation refuses the rest on save, and the API clamps stray values into
+  the error range so no response can ever ship a 2xx/3xx body for an
+  unaccepted payment). Admin operations surface a routing rejection as
+  `409 routing_rejected`.
+
+The admin API validates the whole configuration on save (known field, allowed
+operator, integer amounts, live provider instances, modify op/key completeness,
+reject status/code/message, and reject-rules may not also route to providers).
+The console's routing page edits it all in the **visual graph**: modify nodes
+directly after the entry enrich every request; condition nodes branch to a
+match branch of modify nodes, a provider chain, or a respond node; the
+no-match branch continues to the next condition or the fallback chain, which
+may end in a respond node for payments the whole chain declines. Conditions
+must sit before the fallback providers — rules are evaluated before the
+fallback chain, so the visual order matches runtime order.
 
 ### Environments and forced providers
 
@@ -743,8 +773,8 @@ See [`.env.example`](.env.example) for the full list. The essentials:
 | `OPENPAY_API_ADDR` | `:8080` | API interface listen address |
 | `OPENPAY_WEBHOOK_ADDR` | `:8081` | Webhook engine listen address |
 | `OPENPAY_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
-| `OPENPAY_PROVIDERS` | – | Comma separated provider names to enable |
-| `OPENPAY_PROVIDER_<NAME>_<KEY>` | – | Per-provider config, e.g. `OPENPAY_PROVIDER_MOCK_SECRET` |
+| `OPENPAY_PROVIDERS` | – | Optional; comma separated provider names to bootstrap from the environment (console-stored instances boot without it) |
+| `OPENPAY_PROVIDER_<NAME>_<KEY>` | – | Per-provider config for env-built instances, e.g. `OPENPAY_PROVIDER_WINPAY_PARTNER_ID` |
 | `OPENPAY_API_KEY_PEPPER` | – | Secret mixed into API-key hashing |
 | `OPENPAY_WEBHOOK_MAX_ATTEMPTS` | `6` | Outbound delivery attempts |
 
@@ -755,7 +785,9 @@ Provider credentials set through the console take priority over the
 `OPENPAY_PROVIDER_*` environment variables: a DB row for the same
 adapter/environment replaces the env-built instance at save time (and when the
 process restarts). Env-configured instances remain the fallback so a bare
-`OPENPAY_PROVIDERS=xendit` deployment keeps working as before.
+`OPENPAY_PROVIDERS=xendit` deployment keeps working as before. With no
+`OPENPAY_PROVIDERS` at all the server boots purely from DB rows, and startup
+fails only when neither source has produced a provider instance.
 
 ### Provider API logging
 
@@ -834,7 +866,10 @@ eWallet, retail outlet, pay later, card) with callback token verification.
 Also implemented: the **admin API** (`/admin/api` on the API server: server-side
 sessions, RBAC, DB-backed provider credentials with hot reload, audit log) and
 the **admin console** (Next.js, `admin/`) wired to it — including a routing
-editor, one-time secret reveals for merchant webhook secrets / API keys /
+editor, a first-install setup wizard for brand-new installs
+(`POST /api/setup`, self-disabling after the first owner account; the
+`create-admin` CLI keeps working as the alternative bootstrap),
+one-time secret reveals for merchant webhook secrets / API keys /
 invited-user passwords, and flag-gated features.
 
 Deliberately left for later:
@@ -850,10 +885,9 @@ Deliberately left for later:
 - metrics/tracing, rate limiting, and a message-queue backend for the
   dispatcher;
 - amount-based / weighted / least-cost routing strategies;
-- forgot-password / email flows for console accounts (`create-admin` is the
-  only bootstrap path today);
-- the web-based routing graph prototype under `admin/src/components/routing/`
-  is not wired — the engine accepts `priority` and `round_robin` only.
+- forgot-password / email flows for console accounts (the only account
+  creation paths are the first-install wizard and `create-admin`; nothing
+  emails in this build).
 
 ## License
 

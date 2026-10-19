@@ -208,6 +208,8 @@ func engineStatus(err error) (int, string) {
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, domain.ErrUnprocessable):
 		return http.StatusUnprocessableEntity, "unprocessable"
+	case errors.Is(err, domain.ErrRejected):
+		return http.StatusConflict, "routing_rejected"
 	case errors.Is(err, domain.ErrNoRoute):
 		return http.StatusConflict, "no_route"
 	case errors.Is(err, provider.ErrUnsupportedOperation):

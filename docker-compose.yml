@@ -32,7 +32,6 @@ services:
       OPENPAY_WEBHOOK_ADDR: ":8081"
       OPENPAY_DATABASE_URL: postgres://openpay:openpay@postgres:5432/openpay?sslmode=disable
       OPENPAY_PROVIDERS: mock
-      OPENPAY_PROVIDER_MOCK_SECRET: mock-secret
     ports:
       - "8080:8080"
       - "8081:8081"

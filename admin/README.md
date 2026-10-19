@@ -22,7 +22,14 @@ HttpOnly — no CORS and no token in JavaScript.
 
 ## Sign in
 
-Sessions are server-side; create the first console user with:
+Sessions are server-side. On a brand-new install the console reports
+"no account yet" on `/login` and links to the **first-install wizard** at
+`/setup`: it creates the owner account (while no console account exists,
+`POST /admin/api/setup` is open — after that it answers `409 setup_completed`)
+and, signed in immediately, offers skippable one-time steps for the first
+gateway credentials and the first merchant + API key.
+
+The CLI does the same account step and works alongside it:
 
 ```bash
 openpay create-admin --email owner@example.com --name Owner --role owner

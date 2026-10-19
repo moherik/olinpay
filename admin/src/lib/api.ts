@@ -434,6 +434,16 @@ export function fetchMe() {
   return apiGet<MeResponse>("/me");
 }
 
+/** Public bootstrap status: POST /setup only works while this is true. */
+export function fetchConsoleStatus() {
+  return apiGet<{ needs_setup: boolean }>("/console-status");
+}
+
+/** First-install: create the console's first owner account and get signed in. */
+export function completeSetup(name: string, email: string, password: string) {
+  return apiMutate<MeResponse>("POST", "/setup", { name, email, password });
+}
+
 export function login(email: string, password: string) {
   return apiMutate<MeResponse>("POST", "/login", { email, password });
 }

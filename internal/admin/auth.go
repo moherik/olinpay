@@ -137,6 +137,25 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "cannot create session")
 		return
 	}
+	if err := s.startSession(w, r, user, token); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "cannot create session")
+		return
+	}
+
+	// Update last login; a failure here must not block the session.
+	now := s.now()
+	user.LastLoginAt = &now
+	user.UpdatedAt = now
+	_ = s.users.Update(r.Context(), user)
+
+	s.auditWrite(r, user, "auth.login", user.Email)
+
+	writeData(w, http.StatusOK, s.mePayload(user), nil)
+}
+
+// startSession persists a freshly generated token and sets the session cookie.
+// Shared by login and the first-install setup endpoint.
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *domain.AdminUser, token string) error {
 	now := s.now()
 	sess := &domain.AdminSession{
 		TokenHash: hashToken(token),
@@ -146,17 +165,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now,
 	}
 	if err := s.sessions.Create(r.Context(), sess); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "cannot create session")
-		return
+		return fmt.Errorf("admin: creating session: %w", err)
 	}
-
-	// Update last login; a failure here must not block the session.
-	user.LastLoginAt = &now
-	user.UpdatedAt = now
-	_ = s.users.Update(r.Context(), user)
-
-	s.auditWrite(r, user, "auth.login", user.Email)
-
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,
@@ -165,7 +175,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
-	writeData(w, http.StatusOK, s.mePayload(user), nil)
+	return nil
 }
 
 // logout deletes the session server-side and clears the cookie. Sessions end

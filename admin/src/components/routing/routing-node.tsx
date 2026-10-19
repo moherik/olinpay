@@ -76,7 +76,9 @@ function titleText(kind: string, d: RoutingNodeData) {
     return n > 0 ? `${n} metadata edit${n > 1 ? "s" : ""}` : "Modify request";
   }
   if (kind === "respond") {
-    return "Defined JSON response";
+    const r = d.respond;
+    if (!r) return "Respond";
+    return `${r.status} ${r.code || "(no code)"}`;
   }
   return "";
 }
@@ -90,12 +92,14 @@ function subtitleText(kind: string, d: RoutingNodeData) {
   }
   if (kind === "modify") {
     const m = d.modify;
-    if (m?.description) return m.description.slice(0, 60);
     const n = m?.metadata?.filter((r) => r.key && r.value).length || 0;
-    return n > 0 ? `Set ${n} fields` : "Add edits";
+    if (m?.description) return m.description.slice(0, 60);
+    return n > 0 ? `Set ${n} metadata field${n > 1 ? "s" : ""}` : "Add edits";
   }
   if (kind === "respond") {
-    return `status ${d.respond?.status ?? 200}`;
+    const r = d.respond;
+    if (r?.message) return r.message.slice(0, 60);
+    return "Custom response — no gateway";
   }
   return "";
 }
