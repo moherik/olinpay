@@ -61,25 +61,11 @@ down: ## Stop the local stack
 
 .PHONY: dev
 dev: ## Run the API servers and the admin dashboard, auto-starting what is not up
-	@if curl -sf -o /dev/null http://127.0.0.1:8080/admin/api/console-status; then \
-		echo "  API       already running on :8080 (log: /tmp/openpay-api.log)"; \
-	else \
-		echo "  API       starting on :8080 (log: /tmp/openpay-api.log)..."; \
-		nohup go run ./cmd/openpay serve > /tmp/openpay-api.log 2>&1 & \
-	fi
-	@if curl -sf -o /dev/null http://127.0.0.1:3000/login; then \
-		echo "  Dashboard already running on :3000 (log: /tmp/openpay-dashboard.log)"; \
-	else \
-		echo "  Dashboard starting on :3000 (log: /tmp/openpay-dashboard.log)..."; \
-		npm --prefix admin run dev > /tmp/openpay-dashboard.log 2>&1 & \
-	fi
-	@sleep 5
-	@curl -sf -o /dev/null http://127.0.0.1:8080/admin/api/console-status \
-		|| echo "  NOTE: the API is not answering yet — see the API log above."
-	@curl -sf -o /dev/null http://127.0.0.1:3000/login \
-		|| echo "  NOTE: the dashboard is not answering yet — see the dashboard log above."
-	@echo "  Dashboard : http://localhost:3000"
-	@echo "  API       : http://localhost:8080"
+	bash scripts/dev.sh start
+
+.PHONY: dev-stop
+dev-stop: ## Stop API and dashboard process groups started by make dev
+	bash scripts/dev.sh stop
 
 .PHONY: reset-onboarding
 reset-onboarding: ## ⚠ Destructive: wipe ALL data and go back to the first-install setup
