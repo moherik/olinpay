@@ -45,21 +45,21 @@ func TestBuildRegistryFromDatabaseOnly(t *testing.T) {
 	}
 }
 
-// Empty environment and empty database means nothing can route a payment:
-// boot must fail fast with guidance that names both configuration sources.
+// Empty environment and empty database is the valid first-install state: the
+// admin setup flow remains available to configure the first provider.
 func TestBuildRegistryEmpty(t *testing.T) {
 	cfg := &config.Config{ProviderConfigs: map[string]provider.Config{}}
 	store := memory.NewStore()
 
-	_, err := buildRegistry(cfg, store.ProviderConfigs(), testLogger())
-	if err == nil {
-		t.Fatal("expected an error when no provider is configured anywhere")
+	registry, err := buildRegistry(cfg, store.ProviderConfigs(), testLogger())
+	if err != nil {
+		t.Fatalf("buildRegistry: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no providers configured") {
-		t.Errorf("error should tell the operator what is wrong, got %q", err.Error())
+	if registry == nil {
+		t.Fatal("buildRegistry returned a nil registry")
 	}
-	if !strings.Contains(err.Error(), "admin console") || !strings.Contains(err.Error(), "OPENPAY_PROVIDERS") {
-		t.Errorf("error should mention the console and OPENPAY_PROVIDERS, got %q", err.Error())
+	if registry.Len() != 0 {
+		t.Errorf("expected no provider instances, got %d (%v)", registry.Len(), registry.Names())
 	}
 }
 

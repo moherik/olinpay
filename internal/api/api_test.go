@@ -40,7 +40,7 @@ func setup(t *testing.T) *fixture {
 
 	store := memory.NewStore()
 	merchant := &domain.Merchant{
-		ID:         "mch_api",
+		ID:         "AW9X2K4T7Z",
 		Name:       "API Merchant",
 		APIKeyHash: id.HashAPIKey(testAPIKey, ""),
 		Status:     domain.MerchantActive,

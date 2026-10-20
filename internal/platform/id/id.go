@@ -39,7 +39,7 @@ const MerchantIDPrefix = "AW"
 const MerchantIDLength = 10
 
 // NewMerchantID returns a short human-typed merchant identifier, e.g.
-// "AW239823"-style: the AW prefix plus 8 random characters, exactly 10
+// "AW9X2K4T7Z"-style: the AW prefix plus 8 random characters, exactly 10
 // characters in total.
 func NewMerchantID() (string, error) {
 	buf := make([]byte, MerchantIDLength-len(MerchantIDPrefix))
@@ -53,9 +53,8 @@ func NewMerchantID() (string, error) {
 	return MerchantIDPrefix + string(out), nil
 }
 
-// MatchesMerchantIDShape reports whether s looks like a generated merchant ID.
-// The predicate exists for tests and display, not for access control.
-func MatchesMerchantIDShape(s string) bool {
+// ValidMerchantID reports whether s is an allowed merchant identifier.
+func ValidMerchantID(s string) bool {
 	if len(s) != MerchantIDLength || !strings.HasPrefix(s, MerchantIDPrefix) {
 		return false
 	}

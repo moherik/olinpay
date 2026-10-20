@@ -1,24 +1,18 @@
 package id_test
 
 import (
-	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/moherik/openpay.id/internal/platform/id"
 )
 
 func TestNewMerchantIDShape(t *testing.T) {
-	shape := regexp.MustCompile(`^AW[0-9A-Z]{8}$`)
 	for i := 0; i < 100; i++ {
 		got, err := id.NewMerchantID()
 		if err != nil {
 			t.Fatalf("NewMerchantID: %v", err)
 		}
-		if len(got) > id.MerchantIDLength {
-			t.Fatalf("id %q longer than %d characters", got, id.MerchantIDLength)
-		}
-		if !shape.MatchString(got) {
+		if !id.ValidMerchantID(got) {
 			t.Fatalf("id %q does not match the AW-prefixed shape", got)
 		}
 	}
@@ -38,17 +32,29 @@ func TestNewMerchantIDIsUnique(t *testing.T) {
 	}
 }
 
-func TestMatchesMerchantIDShape(t *testing.T) {
-	if got, err := id.NewMerchantID(); err != nil || !id.MatchesMerchantIDShape(got) {
-		t.Fatalf("generated id %q (err %v) must match its own shape", got, err)
+func TestValidMerchantID(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{name: "valid", id: "AW9X2K4T7Z", want: true},
+		{name: "invalid prefix", id: "BW9X2K4T7Z"},
+		{name: "lowercase", id: "AW9x2K4T7Z"},
+		{name: "forbidden zero", id: "AW0X2K4T7Z"},
+		{name: "forbidden one", id: "AW1X2K4T7Z"},
+		{name: "forbidden I", id: "AWIX2K4T7Z"},
+		{name: "forbidden O", id: "AWOX2K4T7Z"},
+		{name: "nine characters", id: "AW9X2K4T"},
+		{name: "eleven characters", id: "AW9X2K4T7ZQ"},
+		{name: "historical ID", id: "mch_c4933bd7-14ce-4bc1-9e5d-8a026fb23245"},
 	}
-	// Anything outside the generated shape does not count as one.
-	for _, s := range []string{"mch_c4933bd7-14ce-4bc1-9e5d-8a026fb23245", "AW1", "awesome234", "AWO2345X9"} {
-		if id.MatchesMerchantIDShape(s) {
-			t.Fatalf("%q must not count as a generated merchant id", s)
-		}
-	}
-	if !strings.HasPrefix("AW239823", id.MerchantIDPrefix) {
-		t.Fatal("the documented example starts with the AW prefix")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := id.ValidMerchantID(tt.id); got != tt.want {
+				t.Errorf("ValidMerchantID(%q) = %t, want %t", tt.id, got, tt.want)
+			}
+		})
 	}
 }

@@ -1,4 +1,4 @@
-# openpay.id — Project Specification and Agent Onboarding
+# AwsemPay (`openpay.id`) Project Specification and Agent Onboarding
 
 This document records the product intent, design decisions, architecture, implementation state, and known limitations of the AwsemPay platform (`openpay.id`). Read it together with `README.md` before changing behavior. Treat the repository as source of truth if this context becomes stale.
 
@@ -27,7 +27,7 @@ The four logical components requested in the initial brainstorming are all in on
 | Initial provider scope | Mock provider plus interface | Later user requests added Winpay, Midtrans (legacy Core API and BI-SNAP), Xendit and DOKU as concrete, real-world examples. |
 | Provider registration | `provider.Register(name, factory)` from adapter `init()` | Similar to `database/sql` driver registration; binary blank-imports each shipped adapter. |
 | Routing | Pluggable strategy; built-in `priority`, `round_robin` | Strategies order eligible candidates; create tries them as failover. |
-| Merchant ID | `AW` prefix + 8 random characters, max 10 total | Short, human-typed identifiers (e.g. `AW239823`); no other format is supported. |
+| Merchant ID | `AW` prefix + 8 random characters, 10 total | Short, human-typed identifiers (e.g. `AW9X2K4T7Z`); no other format is supported. |
 | Idempotency | `(merchant_id, reference_id)` | A repeated create request should return the existing transaction, not charge again. |
 | Outbound webhooks | Persist before delivery; retry with exponential backoff | Avoid losing events across process restarts. |
 | Testing | In-memory repositories and `httptest` | Routine tests should not require a database or provider credentials. |
@@ -263,11 +263,12 @@ Known limitations: like Winpay, DOKU addresses status/delete by gateway-specific
 - Provider secrets are write-only: `GET /providers` never returns them; `PUT config` with a blank secret keeps the stored value. Console responses normalize nil lists to `[]`, and `RoutingConfig` marshals a nil provider list as `[]` so client code cannot trip on `null`.
 - One-time secrets (merchant webhook secret on create, API key raw value, invited console user's initial password) are returned once in the response `meta` and stored hashed/irretrievable afterwards.
 - The console (`admin/`, Next.js) proxies `/admin/api/*` to the backend via a rewrite (`OPENPAY_BACKEND_URL`, default `http://localhost:8080`), so the session cookie stays same-origin; there is no demo data — unwired features (refunds, transaction event log, provider debug log) are flag-gated off through `/api/me` `flags` rather than rendered disabled.
+- The browser wizard at `/setup` is the only first-owner bootstrap path. Gateway setup is optional, so the server starts with no provider configuration for first-install administration; payment creation returns `no_route` until a provider is configured. If merchant creation succeeds but automatic initial-key creation cannot be confirmed, retain the merchant and one-time webhook secret, then manage keys manually from the authenticated API Keys screen.
 - The console routing page renders a **visual routing graph** (`admin/src/components/routing/routing-studio.tsx`): condition nodes branch on `amount` (integer), `method`, `channel`, `currency` or `metadata:<key>` — a condition's match branch may carry modify edits, a provider chain or a respond node, the no-match branch continues to the next condition; provider nodes after the conditions form the fallback chain, optionally ending in a respond node; modify nodes directly after the entry enrich every request before rule evaluation. Saved through `PUT /merchants/{id}/routing` with `strategy` `priority` or `round_robin` and ordered `rules` evaluated first-match-wins; a failed rule route (and non-matching payments) falls through the fallback chain; a matching rule with a `reject` answers the payment without a gateway call, and a config-level `reject` answers when the whole chain declines. The admin API validates the saved config (condition field/operator pairing, integer amounts, registered provider instances, modify op/key completeness, reject status 400..599 with code and message, no rule that both routes and rejects). A saved reject must be an error status; the API layer clamps stray values into 400..599, so a payment answered by routing can never ship as 2xx/3xx.
 - Every payment runs in an environment (from the API key) and routing candidates are environment-scoped: DB-saved instances are `<adapter>.<env>` and never serve the other environment; env-var instances keep bare names and serve both. A `"provider"` field on create-payment accepts the bare adapter name and resolves to the environment instance (`"winpay"` + sandbox → `winpay.sandbox`); cross-environment forcing is a `no_route`.
-- Admin schema is `migrations/0002_admin.sql` (`admin_users`, `admin_sessions`, `audit_log`, `provider_configs`, plus merchant routing storage changes). Bootstrap with `openpay create-admin` or the console's first-install wizard (`POST /api/setup`, public only while no console account exists, then `409 setup_completed`); there is still no email/password-reset flow.
+- Admin schema is `migrations/0002_admin.sql` (`admin_users`, `admin_sessions`, `audit_log`, `provider_configs`, plus merchant routing storage changes). Bootstrap the first owner only through the browser console's first-install wizard (`POST /api/setup`, public only while no console account exists, then `409 setup_completed`); later accounts are created through the authenticated Users API. There is still no email/password-reset flow.
 
-Schema changes: add a new forward-only migration; update domain, repository interfaces, PostgreSQL scanners/writers, memory implementation, and tests. Consider data backfill/defaults, transaction boundaries, concurrency, and deployed migration state. Do not edit already-deployed migrations as if they had never run.
+Schema changes: add a new forward-only migration; update domain, repository interfaces, PostgreSQL scanners/writers, memory implementation, and tests. Consider data backfill/defaults, transaction boundaries, concurrency, and deployed migration state. Do not edit already-deployed migrations as if they had never run. Migration `0003_merchant_id.sql` strictly rejects pre-existing merchant IDs outside `AW[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}`; incompatible rows must be reset or cleaned up before it can apply. It does not rewrite IDs automatically.
 
 ## 9. Security and financial correctness
 
@@ -299,7 +300,25 @@ go vet ./...
 go test ./...
 go test -race ./...
 make check
+npm --prefix admin run test:setup
+npm --prefix admin run test:console
+npm --prefix admin run test:routing
+bash scripts/dev_test.sh
 ```
+
+`make dev` starts the local API and console together; `make dev-stop` stops the
+supervised process groups. Stop waits for each owned group to exit, bounded by
+`AWSEMPAY_DEV_STOP_TIMEOUT` (positive integer seconds, default 5). A timeout
+returns nonzero and retains the ownership record rather than force-killing or
+forgetting the group. Setup's unload warning belongs to the page, so Back and
+reopening a skipped step do not clear it before one-time secrets are acknowledged.
+
+The console suites are plain `node:test` files: `test:setup` covers the setup
+state machine, `test:console` pins the mobile shell and setup-warning contracts
+at source level (no browser harness exists here), and `test:routing` covers the
+routing cycle check. `scripts/dev_test.sh` drives the process supervisor against
+fake HTTP services on ephemeral ports, including the delayed-shutdown and
+TERM-resistant cases.
 
 Most tests are DB-free. `pkg/provider` tests cover the shared request/response tracing transport (metadata at info, redacted bodies at debug, no leaks of authorization headers or token fields). Winpay tests use `httptest` with generated RSA keys; the fake gateway checks signatures on outgoing calls. Midtrans BI-SNAP tests use `httptest` against a stub SNAP API that checks the B2B token and HMAC-SHA512 request signatures, covering create/inquiry/cancel for VA/QRIS/eWallet, token caching, RSA notification verification and status mapping. Midtrans legacy Core API tests use `httptest` against a stub `POST /v2/charge` server that checks the Basic Auth header, covering create/inquiry/cancel for VA (incl. Mandiri echannel)/QRIS/eWallet/retail outlet, the `SHA512(order_id + status_code + gross_amount + server_key)` notification signature, status_code-based error classification and status mapping. Xendit tests use `httptest` against a stub Payments API that checks Basic Auth and the `api-version` header, covering every supported method plus create/inquiry/cancel, `x-callback-token` verification and event/status mapping. DOKU tests use `httptest` against a stub SNAP API that checks the B2B token and HMAC-SHA512 request signatures, covering create/inquiry/cancel for VA/QRIS/eWallet, token caching, and notification signature verification. Live gateway sandbox testing requires valid credentials and current account-specific endpoint details; passing unit tests is not proof of live integration.
 
@@ -309,7 +328,7 @@ Implemented: merchant API, core engine and routing (`priority`, `round_robin`), 
 
 Known/planned: persist Winpay/Midtrans BI-SNAP/DOKU gateway correlation values (the legacy Midtrans Core API adapter needs none); live sandbox verification; additional gateway adapters; first-class refunds; production queue/metrics/dashboards (provider-request tracing already ships); stronger recovery for provider success followed by DB failure; email flows for console accounts (password reset/invite). Do not claim roadmap items are implemented.
 
-Also implemented since the original scope: the admin API (`/admin/api` on the API server — server-side sessions with a `create-admin`/setup-wizard bootstrap, RBAC owner > operator > tech enforced per route, provider credential CRUD stored in `provider_configs` with hot reload into the running registry, inbound reprocess, outbound retry, append-only audit log, `migrations/0002_admin.sql`) and the admin console (`admin/`, Next.js) wired to it over a same-origin proxy — every screen reads real data; unwired features (refunds, transaction event log, provider debug log) are flag-gated off rather than shown. One-time secrets (merchant webhook secret, API key, invited user password) are revealed once and stored hashed. The routing page hosts the visual failover-chain editor (wired, see the admin section above); the compact priority list editor remains on the merchant detail page.
+Also implemented since the original scope: the admin API (`/admin/api` on the API server, server-side sessions with a setup-wizard bootstrap, RBAC owner > operator > tech enforced per route, provider credential CRUD stored in `provider_configs` with hot reload into the running registry, inbound reprocess, outbound retry, append-only audit log, `migrations/0002_admin.sql`) and the admin console (`admin/`, Next.js) wired to it over a same-origin proxy, every screen reads real data; unwired features (refunds, transaction event log, provider debug log) are flag-gated off rather than shown. One-time secrets (merchant webhook secret, API key, invited user password) are revealed once and stored hashed. The routing page hosts the visual failover-chain editor (wired, see the admin section above); the compact priority list editor remains on the merchant detail page.
 
 ## 12. Instructions for a future coding agent
 

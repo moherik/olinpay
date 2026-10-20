@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
+import { cycleNodeIDs } from "./routing-cycle.mjs";
 
 export type NodeKind = "entry" | "condition" | "provider" | "modify" | "respond";
 
@@ -248,6 +249,10 @@ export function compileRouting(
   if (!entry) {
     return { strategy, providers: [], rules: [], enrich: [], reject: null, issues: [...issues, { message: "Graph has no entry node." }] };
   }
+
+  cycleNodeIDs(graph.nodes, graph.edges, entry.id).forEach((nodeId) => {
+    issues.push({ nodeId, message: "Routing flow contains a cycle — remove the loop." });
+  });
 
   const nodeOf = (id: string) => graph.nodes.find((n) => n.id === id) as RoutingNode | undefined;
   const outsOf = (id: string, handle?: string) =>
@@ -574,4 +579,3 @@ export function createNode(kind: NodeKind, position: { x: number; y: number }): 
       return { id, type: "routing", position, data: { kind: "entry", label: "Entry" }, deletable: false };
   }
 }
-

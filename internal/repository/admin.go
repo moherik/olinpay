@@ -17,6 +17,9 @@ type AdminUserRepository interface {
 	// Create inserts a console user. It returns domain.ErrConflict when the
 	// email is already taken.
 	Create(ctx context.Context, u *domain.AdminUser) error
+	// CreateFirst inserts the first console user. It returns domain.ErrConflict
+	// when any console user already exists.
+	CreateFirst(ctx context.Context, u *domain.AdminUser) error
 	// Update persists mutable fields (name, role, status, last login).
 	Update(ctx context.Context, u *domain.AdminUser) error
 	// GetByID loads a user by identifier.

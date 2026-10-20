@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,7 +52,7 @@ func setup(t *testing.T) *fixture {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	merchant := &domain.Merchant{
-		ID:          "mch_admin",
+		ID:          "AW9X2K4T7Z",
 		Name:        "Console Merchant",
 		CallbackURL: "https://example.test/callback",
 		Status:      domain.MerchantActive,
@@ -208,7 +210,7 @@ func (f *fixture) loginAs(t *testing.T, email, role string) *http.Cookie {
 func (f *fixture) seedTransaction(t *testing.T, reference, env string) *domain.Transaction {
 	t.Helper()
 	tx, err := f.engine.CreatePayment(context.Background(), core.CreatePaymentCommand{
-		MerchantID:  "mch_admin",
+		MerchantID:  "AW9X2K4T7Z",
 		Environment: env,
 		ReferenceID: reference,
 		Amount:      150000,
@@ -459,7 +461,7 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	cookie := f.loginAs(t, "owner@console.test", "owner")
 
 	status, data := f.doWith(t, cookie, "POST", "/api/api-keys", map[string]string{
-		"merchant_id": "mch_admin",
+		"merchant_id": "AW9X2K4T7Z",
 		"label":       "hq",
 		"environment": "production",
 	})
@@ -496,7 +498,7 @@ func TestAPIKeyCreatesSandboxScopedKey(t *testing.T) {
 	f := setup(t)
 	cookie := f.loginAs(t, "owner@console.test", "owner")
 	status, data := f.doWith(t, cookie, "POST", "/api/api-keys", map[string]string{
-		"merchant_id": "mch_admin",
+		"merchant_id": "AW9X2K4T7Z",
 		"environment": "sandbox",
 	})
 	if status != 201 {
@@ -786,6 +788,83 @@ func TestSetupWizardInstallsFirstOwner(t *testing.T) {
 	let("login after setup", status, raw, 200)
 }
 
+// TestSetupWizardConcurrentFirstOwner catches a setup path that authorizes on
+// a Count call before creating the owner instead of making that transition
+// atomic in the repository.
+func TestSetupWizardConcurrentFirstOwner(t *testing.T) {
+	f := setup(t)
+	start := make(chan struct{})
+	type result struct {
+		status int
+		body   []byte
+		err    error
+	}
+	results := make(chan result, 16)
+
+	var wg sync.WaitGroup
+	for i := range 16 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			payload, err := json.Marshal(map[string]string{
+				"name":     "Owner",
+				"email":    fmt.Sprintf("owner-%d@example.test", i),
+				"password": "correct horse battery",
+			})
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			<-start
+			req, err := http.NewRequest(http.MethodPost, f.server.URL+"/api/setup", bytes.NewReader(payload))
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := f.server.Client().Do(req)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			results <- result{status: resp.StatusCode, body: body, err: err}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var created, completed int
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("POST /api/setup: %v", result.err)
+		}
+		switch result.status {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			if !strings.Contains(string(result.body), "setup_completed") {
+				t.Fatalf("setup conflict body = %s, want setup_completed", result.body)
+			}
+			completed++
+		default:
+			t.Fatalf("setup status = %d, want 201 or 409 (%s)", result.status, result.body)
+		}
+	}
+	if created != 1 || completed != 15 {
+		t.Fatalf("setup results: %d created, %d completed; want 1 and 15", created, completed)
+	}
+	count, err := f.store.AdminUsers().Count(context.Background())
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("Count = %d, want 1", count)
+	}
+}
+
 // TestMerchantIDsUseAWPrefix pins the public merchant identifier contract:
 // new merchants get short AW-prefixed IDs of max 10 characters.
 func TestMerchantIDsUseAWPrefix(t *testing.T) {
@@ -800,7 +879,7 @@ func TestMerchantIDsUseAWPrefix(t *testing.T) {
 	}
 	created, _ := data["data"].(map[string]any)
 	mid, _ := created["id"].(string)
-	if !id.MatchesMerchantIDShape(mid) {
+	if !id.ValidMerchantID(mid) {
 		t.Fatalf("created merchant id %q, want an AW-prefixed id of at most %d characters", mid, id.MerchantIDLength)
 	}
 }
@@ -1134,7 +1213,7 @@ func TestAuditLogReadableAndSearched(t *testing.T) {
 	tx := f.seedTransaction(t, "AUD-1", domain.EnvironmentSandbox)
 	f.doWith(t, op, "POST", "/api/transactions/"+tx.ID+"/cancel", nil)
 	f.doWith(t, cookie, "POST", "/api/api-keys", map[string]string{
-		"merchant_id": "mch_admin", "environment": "sandbox",
+		"merchant_id": "AW9X2K4T7Z", "environment": "sandbox",
 	})
 
 	status, data := f.doWith(t, cookie, "GET", "/api/audit?q=cancel", nil)

@@ -175,6 +175,24 @@ func TestRouterReturnsNoRouteWhenNothingMatches(t *testing.T) {
 	}
 }
 
+func TestEngineCreatePaymentWithNoProviderReturnsNoRoute(t *testing.T) {
+	h := newHarness(t)
+	registry := provider.NewRegistry()
+	h.engine = core.New(core.Deps{
+		Registry:     registry,
+		Router:       core.NewRouter(registry),
+		Transactions: h.store.Transactions(),
+		Merchants:    h.store.Merchants(),
+		Notifier:     h.notifier,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	_, err := h.engine.CreatePayment(t.Context(), h.createCommand())
+	if !errors.Is(err, domain.ErrNoRoute) {
+		t.Errorf("CreatePayment error = %v, want ErrNoRoute", err)
+	}
+}
+
 func TestRouterScopesCandidatesByEnvironment(t *testing.T) {
 	sandboxOnly := &stubProvider{name: "winpay.sandbox", caps: provider.Capabilities{SupportsInquiry: true}}
 	prodOnly := &stubProvider{name: "winpay.production", caps: provider.Capabilities{SupportsInquiry: true}}
