@@ -37,12 +37,13 @@ type Notifier interface {
 
 // Deps are the engine's collaborators.
 type Deps struct {
-	Registry     *provider.Registry
-	Router       *Router
-	Transactions repository.TransactionRepository
-	Merchants    repository.MerchantRepository
-	Notifier     Notifier
-	Logger       *slog.Logger
+	Registry         *provider.Registry
+	Router           *Router
+	Transactions     repository.TransactionRepository
+	Merchants        repository.MerchantRepository
+	MerchantSettings repository.MerchantSettingsRepository
+	Notifier         Notifier
+	Logger           *slog.Logger
 }
 
 // Engine is the unified payment processor.
@@ -51,6 +52,7 @@ type Engine struct {
 	router       *Router
 	txRepo       repository.TransactionRepository
 	merchantRepo repository.MerchantRepository
+	settingsRepo repository.MerchantSettingsRepository
 	notifier     Notifier
 	log          *slog.Logger
 
@@ -73,6 +75,7 @@ func New(d Deps) *Engine {
 		router:       router,
 		txRepo:       d.Transactions,
 		merchantRepo: d.Merchants,
+		settingsRepo: d.MerchantSettings,
 		notifier:     d.Notifier,
 		log:          log,
 		now:          time.Now,
@@ -186,6 +189,18 @@ func (e *Engine) CreatePayment(ctx context.Context, cmd CreatePaymentCommand) (*
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return nil, err
 	}
+	returnURL := ""
+	successReturnURL := ""
+	failureReturnURL := ""
+	if e.settingsRepo != nil {
+		settings, err := e.settingsRepo.Get(ctx, merchant.ID)
+		if err != nil {
+			return nil, err
+		}
+		returnURL = settings.ReturnURL
+		successReturnURL = settings.SuccessReturnURL
+		failureReturnURL = settings.FailureReturnURL
+	}
 
 	routeReq := &RouteRequest{
 		MerchantID:  merchant.ID,
@@ -215,16 +230,19 @@ func (e *Engine) CreatePayment(ctx context.Context, cmd CreatePaymentCommand) (*
 	}
 
 	provReq := &provider.CreatePaymentRequest{
-		ReferenceID: cmd.ReferenceID,
-		Amount:      cmd.Amount,
-		Currency:    cmd.currency(),
-		Method:      cmd.Method,
-		Channel:     cmd.Channel,
-		Customer:    cmd.Customer,
-		Items:       cmd.Items,
-		Description: effectiveDescription,
-		Expiry:      cmd.Expiry,
-		Metadata:    effectiveMetadata,
+		ReferenceID:      cmd.ReferenceID,
+		Amount:           cmd.Amount,
+		Currency:         cmd.currency(),
+		Method:           cmd.Method,
+		Channel:          cmd.Channel,
+		Customer:         cmd.Customer,
+		Items:            cmd.Items,
+		Description:      effectiveDescription,
+		Expiry:           cmd.Expiry,
+		Metadata:         effectiveMetadata,
+		ReturnURL:        returnURL,
+		SuccessReturnURL: successReturnURL,
+		FailureReturnURL: failureReturnURL,
 	}
 
 	transactionID := e.newID()

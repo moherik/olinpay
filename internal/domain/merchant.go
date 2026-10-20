@@ -32,6 +32,16 @@ type Merchant struct {
 	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
+// MerchantSettings holds merchant-owned redirect behavior that applies to all
+// payment requests unless the merchant explicitly overrides it per request.
+type MerchantSettings struct {
+	MerchantID       string    `json:"merchant_id"`
+	ReturnURL        string    `json:"return_url"`
+	SuccessReturnURL string    `json:"success_return_url"`
+	FailureReturnURL string    `json:"failure_return_url"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
 // Active reports whether the merchant is allowed to transact.
 func (m *Merchant) Active() bool { return m.Status == MerchantActive }
 

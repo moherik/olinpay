@@ -15,19 +15,20 @@ import (
 
 // Deps are the admin server's collaborators.
 type Deps struct {
-	Engine       *core.Engine
-	Registry     *provider.Registry
-	AdminUsers   repository.AdminUserRepository
-	Sessions     repository.AdminSessionRepository
-	Audit        repository.AuditRepository
-	APIKeys      repository.APIKeyRepository
-	Merchants    repository.MerchantRepository
-	Transactions repository.TransactionRepository
-	Deliveries   repository.WebhookDeliveryRepository
-	Inbound      repository.InboundEventRepository
-	Activities   repository.TransactionActivityRepository
-	ProviderCfgs repository.ProviderConfigRepository
-	Stats        repository.AdminStore
+	Engine           *core.Engine
+	Registry         *provider.Registry
+	AdminUsers       repository.AdminUserRepository
+	Sessions         repository.AdminSessionRepository
+	Audit            repository.AuditRepository
+	APIKeys          repository.APIKeyRepository
+	Merchants        repository.MerchantRepository
+	MerchantSettings repository.MerchantSettingsRepository
+	Transactions     repository.TransactionRepository
+	Deliveries       repository.WebhookDeliveryRepository
+	Inbound          repository.InboundEventRepository
+	Activities       repository.TransactionActivityRepository
+	ProviderCfgs     repository.ProviderConfigRepository
+	Stats            repository.AdminStore
 	// ReloadProvider rebuilds (or retires) a provider instance after its
 	// credentials changed. Provided by the host wiring.
 	ReloadProvider func(name, environment string) error
@@ -44,26 +45,27 @@ type Deps struct {
 
 // Server is the admin console HTTP server.
 type Server struct {
-	engine       *core.Engine
-	registry     *provider.Registry
-	users        repository.AdminUserRepository
-	sessions     repository.AdminSessionRepository
-	audit        repository.AuditRepository
-	apiKeys      repository.APIKeyRepository
-	merchants    repository.MerchantRepository
-	transactions repository.TransactionRepository
-	deliveries   repository.WebhookDeliveryRepository
-	inbound      repository.InboundEventRepository
-	activities   repository.TransactionActivityRepository
-	providerCfgs repository.ProviderConfigRepository
-	stats        repository.AdminStore
-	reload       func(name, environment string) error
-	flags        func() map[string]bool
-	maxAttempts  int
-	pepper       string
-	log          *slog.Logger
-	now          func() time.Time
-	newID        func(string) string
+	engine           *core.Engine
+	registry         *provider.Registry
+	users            repository.AdminUserRepository
+	sessions         repository.AdminSessionRepository
+	audit            repository.AuditRepository
+	apiKeys          repository.APIKeyRepository
+	merchants        repository.MerchantRepository
+	merchantSettings repository.MerchantSettingsRepository
+	transactions     repository.TransactionRepository
+	deliveries       repository.WebhookDeliveryRepository
+	inbound          repository.InboundEventRepository
+	activities       repository.TransactionActivityRepository
+	providerCfgs     repository.ProviderConfigRepository
+	stats            repository.AdminStore
+	reload           func(name, environment string) error
+	flags            func() map[string]bool
+	maxAttempts      int
+	pepper           string
+	log              *slog.Logger
+	now              func() time.Time
+	newID            func(string) string
 }
 
 // New builds the admin server.
@@ -77,26 +79,27 @@ func New(d Deps) *Server {
 		maxAttempts = 6
 	}
 	return &Server{
-		engine:       d.Engine,
-		registry:     d.Registry,
-		users:        d.AdminUsers,
-		sessions:     d.Sessions,
-		audit:        d.Audit,
-		apiKeys:      d.APIKeys,
-		merchants:    d.Merchants,
-		transactions: d.Transactions,
-		deliveries:   d.Deliveries,
-		inbound:      d.Inbound,
-		activities:   d.Activities,
-		providerCfgs: d.ProviderCfgs,
-		stats:        d.Stats,
-		reload:       d.ReloadProvider,
-		flags:        d.FeatureFlags,
-		maxAttempts:  maxAttempts,
-		pepper:       d.Pepper,
-		log:          log,
-		now:          time.Now,
-		newID:        newPrefixedID,
+		engine:           d.Engine,
+		registry:         d.Registry,
+		users:            d.AdminUsers,
+		sessions:         d.Sessions,
+		audit:            d.Audit,
+		apiKeys:          d.APIKeys,
+		merchants:        d.Merchants,
+		merchantSettings: d.MerchantSettings,
+		transactions:     d.Transactions,
+		deliveries:       d.Deliveries,
+		inbound:          d.Inbound,
+		activities:       d.Activities,
+		providerCfgs:     d.ProviderCfgs,
+		stats:            d.Stats,
+		reload:           d.ReloadProvider,
+		flags:            d.FeatureFlags,
+		maxAttempts:      maxAttempts,
+		pepper:           d.Pepper,
+		log:              log,
+		now:              time.Now,
+		newID:            newPrefixedID,
 	}
 }
 
@@ -135,6 +138,8 @@ func (s *Server) Handler() http.Handler {
 		r.With(requireRole(domain.RoleOperator)).Post("/api/merchants", s.createMerchant)
 		r.Get("/api/merchants/{id}", s.getMerchant)
 		r.With(requireRole(domain.RoleOperator)).Patch("/api/merchants/{id}", s.updateMerchant)
+		r.Get("/api/merchants/{id}/settings", s.getMerchantSettings)
+		r.With(requireRole(domain.RoleOperator)).Put("/api/merchants/{id}/settings", s.updateMerchantSettings)
 		r.With(requireRole(domain.RoleTech)).Put("/api/merchants/{id}/routing", s.saveRouting)
 
 		r.Get("/api/providers", s.listProviders)

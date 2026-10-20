@@ -595,7 +595,7 @@ func (p *Provider) createEWallet(ctx context.Context, req *provider.CreatePaymen
 	// The e-wallet PAY_RETURN url is where the payer is redirected after
 	// completing payment, so it must come from the payment request, not from the
 	// gateway callback/webhook configuration.
-	if returnURL := strings.TrimSpace(req.Metadata["return_url"]); returnURL != "" {
+	if returnURL := firstNonEmpty(req.Metadata["return_url"], req.ReturnURL, req.SuccessReturnURL, req.FailureReturnURL); returnURL != "" {
 		payload.URLParams = []ewalletURLParam{{URL: returnURL, Type: "PAY_RETURN", IsDeeplink: "N"}}
 	}
 	if details := customerDetailsFrom(req.Customer); details != nil {

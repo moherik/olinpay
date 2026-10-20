@@ -65,27 +65,29 @@ func setup(t *testing.T) *fixture {
 
 	dispatcher := webhook.NewDispatcher(store.Webhooks(), store.Merchants(), config.WebhookConfig{}, quiet)
 	engine := core.New(core.Deps{
-		Registry:     registry,
-		Router:       core.NewRouter(registry),
-		Transactions: store.Transactions(),
-		Merchants:    store.Merchants(),
-		Notifier:     dispatcher,
-		Logger:       quiet,
+		Registry:         registry,
+		Router:           core.NewRouter(registry),
+		Transactions:     store.Transactions(),
+		Merchants:        store.Merchants(),
+		MerchantSettings: store.MerchantSettings(),
+		Notifier:         dispatcher,
+		Logger:           quiet,
 	})
 
 	srv := admin.New(admin.Deps{
-		Engine:       engine,
-		Registry:     registry,
-		AdminUsers:   store.AdminUsers(),
-		Sessions:     store.AdminSessions(),
-		Audit:        store.Audit(),
-		APIKeys:      store.APIKeys(),
-		Merchants:    store.Merchants(),
-		Transactions: store.Transactions(),
-		Deliveries:   store.Webhooks(),
-		Inbound:      store.Inbound(),
-		ProviderCfgs: store.ProviderConfigs(),
-		Stats:        store.AdminStats(),
+		Engine:           engine,
+		Registry:         registry,
+		AdminUsers:       store.AdminUsers(),
+		Sessions:         store.AdminSessions(),
+		Audit:            store.Audit(),
+		APIKeys:          store.APIKeys(),
+		Merchants:        store.Merchants(),
+		MerchantSettings: store.MerchantSettings(),
+		Transactions:     store.Transactions(),
+		Deliveries:       store.Webhooks(),
+		Inbound:          store.Inbound(),
+		ProviderCfgs:     store.ProviderConfigs(),
+		Stats:            store.AdminStats(),
 		ReloadProvider: func(name, env string) error {
 			row, err := store.ProviderConfigs().Get(context.Background(), name, env)
 			if err != nil {
@@ -606,6 +608,39 @@ func TestRemoveProviderConfigRetiresInstance(t *testing.T) {
 const mockName = "mock" // mock.Provider#Name constant mirrored for assertions
 
 // --- merchants --------------------------------------------------------------
+
+func TestMerchantReturnURLSettingsPersist(t *testing.T) {
+	f := setup(t)
+	cookie := f.loginAs(t, "operator@console.test", "operator")
+	path := "/api/merchants/AW9X2K4T7Z/settings"
+
+	status, data := f.doWith(t, cookie, "GET", path, nil)
+	if status != 200 {
+		t.Fatalf("get settings: status %d", status)
+	}
+	settings := data["data"].(map[string]any)
+	if settings["return_url"] != "" {
+		t.Fatalf("initial return_url = %v, want empty", settings["return_url"])
+	}
+
+	status, data = f.doWith(t, cookie, "PUT", path, map[string]string{
+		"return_url":         "https://shop.example/return",
+		"success_return_url": "https://shop.example/paid",
+		"failure_return_url": "https://shop.example/failed",
+	})
+	if status != 200 {
+		t.Fatalf("save settings: status %d", status)
+	}
+	settings = data["data"].(map[string]any)
+	if settings["success_return_url"] != "https://shop.example/paid" || settings["failure_return_url"] != "https://shop.example/failed" {
+		t.Fatalf("saved settings = %v", settings)
+	}
+
+	status, _ = f.doWith(t, cookie, "PUT", path, map[string]string{"return_url": "javascript:alert(1)"})
+	if status != 400 {
+		t.Fatalf("unsafe return URL: status %d, want 400", status)
+	}
+}
 
 func TestMerchantLifecycleAndRouting(t *testing.T) {
 	f := setup(t)

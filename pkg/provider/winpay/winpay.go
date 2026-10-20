@@ -490,7 +490,7 @@ func (p *Provider) createEWallet(ctx context.Context, req *provider.CreatePaymen
 			"e-wallets require customer.phone", provider.ErrInvalidRequest)
 	}
 	callback := firstNonEmpty(req.CallbackURL, p.callbackURL)
-	returnURL := firstNonEmpty(req.Metadata["return_url"], callback)
+	returnURL := firstNonEmpty(req.Metadata["return_url"], req.ReturnURL, req.SuccessReturnURL, req.FailureReturnURL, callback)
 	if returnURL == "" {
 		return nil, provider.NewError(Name, opCreate, "INVALID_REQUEST",
 			"e-wallets require a callback URL: set the provider return_url or pass return_url per payment",

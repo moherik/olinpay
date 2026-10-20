@@ -29,6 +29,7 @@ The four logical components requested in the initial brainstorming are all in on
 | Routing | Pluggable strategy; built-in `priority`, `round_robin` | Strategies order eligible candidates; create tries them as failover. |
 | Merchant ID | `AW` prefix + 8 random characters, 10 total | Short, human-typed identifiers (e.g. `AW9X2K4T7Z`); no other format is supported. |
 | Idempotency | `(merchant_id, reference_id)` | A repeated create request should return the existing transaction, not charge again. |
+| Payer redirects | Merchant settings stored separately from merchant identity | Default, success and failure return URLs are applied to provider requests without requiring them on each payment call. |
 | Outbound webhooks | Persist before delivery; retry with exponential backoff | Avoid losing events across process restarts. |
 | Testing | In-memory repositories and `httptest` | Routine tests should not require a database or provider credentials. |
 | Winpay API | Bank Indonesia SNAP API | Adapter is a worked example, not a claim that every gateway uses SNAP. |
@@ -258,7 +259,7 @@ Known limitations: like Winpay, DOKU addresses status/delete by gateway-specific
 
 ### Admin API and console (the control plane)
 
-- The admin API mounts under `/admin/api` on the API server (`internal/admin`): server-side sessions (`admin_sessions`, cookie `HttpOnly`/`SameSite=Lax`, 12h TTL), RBAC enforced per route with the hierarchy **owner > operator > tech**, and an append-only audit log.
+- The admin API mounts under `/admin/api` on the API server (`internal/admin`): server-side sessions (`admin_sessions`, cookie `HttpOnly`/`SameSite=Lax`, 12h TTL), RBAC enforced per route with the hierarchy **owner > operator > tech**, and an append-only audit log. Merchant payer return URLs (default, success and failure) are stored in `merchant_settings`, editable by operators, and supplied to provider creates by the core engine.
 - Provider credentials are **global per adapter+environment** (`provider_configs` rows), not per merchant; a merchant's "provider assignment" is its routing entries. Saving a config builds the instance named `<adapter>.<env>` and hot-replaces it in the running registry; it also replaces the env-var-built instance for that environment at startup. Env-var-configured instances keep their bare adapter name (environment unknown to the catalog) and remain the no-DB fallback.
 - Provider secrets are write-only: `GET /providers` never returns them; `PUT config` with a blank secret keeps the stored value. Console responses normalize nil lists to `[]`, and `RoutingConfig` marshals a nil provider list as `[]` so client code cannot trip on `null`.
 - One-time secrets (merchant webhook secret on create, API key raw value, invited console user's initial password) are returned once in the response `meta` and stored hashed/irretrievable afterwards.

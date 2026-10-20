@@ -65,6 +65,15 @@ type MerchantRepository interface {
 	List(ctx context.Context, limit, offset int) ([]*domain.Merchant, error)
 }
 
+// MerchantSettingsRepository persists settings that affect payment behavior
+// without adding them to the merchant's core identity record.
+type MerchantSettingsRepository interface {
+	// Get returns an empty settings object when the merchant has no saved row.
+	Get(ctx context.Context, merchantID string) (*domain.MerchantSettings, error)
+	// Upsert creates or replaces the merchant's settings.
+	Upsert(ctx context.Context, settings *domain.MerchantSettings) error
+}
+
 // MerchantListing is a merchant joined with the counts the console list shows.
 type MerchantListing struct {
 	Merchant        *domain.Merchant

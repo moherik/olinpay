@@ -95,6 +95,11 @@ type CreatePaymentRequest struct {
 	// CallbackURL, when set, overrides the gateway's globally configured
 	// webhook URL for this single payment.
 	CallbackURL string `json:"callback_url,omitempty"`
+	// ReturnURL is the merchant's payer redirect target after the payment flow.
+	ReturnURL string `json:"-"`
+	// SuccessReturnURL and FailureReturnURL override ReturnURL where supported.
+	SuccessReturnURL string `json:"-"`
+	FailureReturnURL string `json:"-"`
 	// Metadata is opaque key/value data echoed back on responses and webhooks.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }

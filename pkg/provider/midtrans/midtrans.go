@@ -317,7 +317,7 @@ func (p *Provider) createEWallet(ctx context.Context, req *provider.CreatePaymen
 	// The e-wallet return URL is where the payer is redirected after completing
 	// payment, so it must come from the payment request (or per-provider
 	// config), not from the webhook configuration.
-	returnURL := firstNonEmpty(req.Metadata["return_url"], req.CallbackURL)
+	returnURL := firstNonEmpty(req.Metadata["return_url"], req.ReturnURL, req.SuccessReturnURL, req.FailureReturnURL)
 
 	payload := p.baseCharge(req)
 	payload.PaymentType = paymentType

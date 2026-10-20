@@ -18,31 +18,33 @@ import (
 
 // Store holds all in-memory state behind a single mutex.
 type Store struct {
-	mu              sync.RWMutex
-	transactions    map[string]*domain.Transaction
-	merchants       map[string]*domain.Merchant
-	deliveries      map[string]*domain.WebhookDelivery
-	apiKeys         map[string]*domain.APIKey
-	adminUsers      map[string]*domain.AdminUser
-	adminSessions   map[string]*domain.AdminSession
-	auditEntries    []*domain.AuditEntry
-	inboundEvents   map[string]*domain.InboundEvent
-	activities      map[string]*domain.TransactionActivity
-	providerConfigs map[string]*domain.ProviderConfig
+	mu               sync.RWMutex
+	transactions     map[string]*domain.Transaction
+	merchants        map[string]*domain.Merchant
+	merchantSettings map[string]*domain.MerchantSettings
+	deliveries       map[string]*domain.WebhookDelivery
+	apiKeys          map[string]*domain.APIKey
+	adminUsers       map[string]*domain.AdminUser
+	adminSessions    map[string]*domain.AdminSession
+	auditEntries     []*domain.AuditEntry
+	inboundEvents    map[string]*domain.InboundEvent
+	activities       map[string]*domain.TransactionActivity
+	providerConfigs  map[string]*domain.ProviderConfig
 }
 
 // NewStore returns an empty store.
 func NewStore() *Store {
 	return &Store{
-		transactions:    make(map[string]*domain.Transaction),
-		merchants:       make(map[string]*domain.Merchant),
-		deliveries:      make(map[string]*domain.WebhookDelivery),
-		apiKeys:         make(map[string]*domain.APIKey),
-		adminUsers:      make(map[string]*domain.AdminUser),
-		adminSessions:   make(map[string]*domain.AdminSession),
-		inboundEvents:   make(map[string]*domain.InboundEvent),
-		activities:      make(map[string]*domain.TransactionActivity),
-		providerConfigs: make(map[string]*domain.ProviderConfig),
+		transactions:     make(map[string]*domain.Transaction),
+		merchants:        make(map[string]*domain.Merchant),
+		merchantSettings: make(map[string]*domain.MerchantSettings),
+		deliveries:       make(map[string]*domain.WebhookDelivery),
+		apiKeys:          make(map[string]*domain.APIKey),
+		adminUsers:       make(map[string]*domain.AdminUser),
+		adminSessions:    make(map[string]*domain.AdminSession),
+		inboundEvents:    make(map[string]*domain.InboundEvent),
+		activities:       make(map[string]*domain.TransactionActivity),
+		providerConfigs:  make(map[string]*domain.ProviderConfig),
 	}
 }
 
@@ -51,6 +53,10 @@ func (s *Store) Transactions() repository.TransactionRepository { return &txRepo
 
 // Merchants returns the merchant repository view.
 func (s *Store) Merchants() repository.MerchantRepository { return &merchantRepo{store: s} }
+
+func (s *Store) MerchantSettings() repository.MerchantSettingsRepository {
+	return &merchantSettingsRepo{store: s}
+}
 
 // Webhooks returns the webhook delivery repository view.
 func (s *Store) Webhooks() repository.WebhookDeliveryRepository { return &webhookRepo{store: s} }
@@ -220,6 +226,29 @@ func containsStatus(list []provider.Status, want provider.Status) bool {
 // --- merchants -------------------------------------------------------------
 
 type merchantRepo struct{ store *Store }
+
+type merchantSettingsRepo struct{ store *Store }
+
+func (r *merchantSettingsRepo) Get(_ context.Context, merchantID string) (*domain.MerchantSettings, error) {
+	r.store.mu.RLock()
+	defer r.store.mu.RUnlock()
+	if settings := r.store.merchantSettings[merchantID]; settings != nil {
+		clone := *settings
+		return &clone, nil
+	}
+	return &domain.MerchantSettings{MerchantID: merchantID}, nil
+}
+
+func (r *merchantSettingsRepo) Upsert(_ context.Context, settings *domain.MerchantSettings) error {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	if _, ok := r.store.merchants[settings.MerchantID]; !ok {
+		return domain.ErrNotFound
+	}
+	clone := *settings
+	r.store.merchantSettings[settings.MerchantID] = &clone
+	return nil
+}
 
 func (r *merchantRepo) Create(_ context.Context, m *domain.Merchant) error {
 	if !id.ValidMerchantID(m.ID) {

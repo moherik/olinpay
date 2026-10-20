@@ -215,6 +215,10 @@ API keys, provider credentials (stored in PostgreSQL, hot-reloaded into the
 running server), inbound reprocessing, outbound retries, users and an
 append-only audit log — all gated by the `owner` > `operator` > `tech` role
 hierarchy the backend enforces per route.
+Each merchant can store default, success and failure payer return URLs from its
+detail page. Payment creation uses these settings automatically; supported
+providers can use success/failure URLs separately, while providers accepting a
+single redirect use the default URL (then the success URL).
 
 ## API reference
 

@@ -503,7 +503,7 @@ func (p *Provider) createEWallet(ctx context.Context, req *provider.CreatePaymen
 		return nil, provider.NewError(Name, opCreate, "INVALID_REQUEST",
 			fmt.Sprintf("unsupported e-wallet channel %q", channel), provider.ErrInvalidRequest)
 	}
-	callback := firstNonEmpty(req.CallbackURL, p.callbackURL)
+	callback := firstNonEmpty(req.Metadata["return_url"], req.ReturnURL, req.SuccessReturnURL, req.FailureReturnURL, req.CallbackURL, p.callbackURL)
 	if callback == "" {
 		return nil, provider.NewError(Name, opCreate, "INVALID_REQUEST",
 			"e-wallets require a callback URL: set the provider callback_url or pass callback_url per payment",

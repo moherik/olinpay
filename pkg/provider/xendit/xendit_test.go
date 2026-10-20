@@ -317,6 +317,9 @@ func TestCreateEWalletUsesReturnURL(t *testing.T) {
 	p := newTestProvider(t, g, provider.Config{"return_url": "https://shop.example/done"})
 	resp, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
 		ReferenceID: "INV-EW", Amount: 50000, Method: provider.MethodEWallet, Channel: "dana",
+		ReturnURL:        "https://shop.example/default",
+		SuccessReturnURL: "https://shop.example/paid",
+		FailureReturnURL: "https://shop.example/failed",
 	})
 	if err != nil {
 		t.Fatalf("CreatePayment: %v", err)
@@ -336,8 +339,11 @@ func TestCreateEWalletUsesReturnURL(t *testing.T) {
 		t.Errorf("channel_code = %v, want DANA", sent["channel_code"])
 	}
 	props, _ := sent["channel_properties"].(map[string]any)
-	if props["success_return_url"] != "https://shop.example/done" {
+	if props["success_return_url"] != "https://shop.example/paid" {
 		t.Errorf("success_return_url = %v", props["success_return_url"])
+	}
+	if props["failure_return_url"] != "https://shop.example/failed" {
+		t.Errorf("failure_return_url = %v", props["failure_return_url"])
 	}
 }
 

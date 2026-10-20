@@ -85,6 +85,10 @@ function MerchantDetailInner() {
   const [providers, setProviders] = useState<RawProviderEntry[]>([]);
   const [callbackDraft, setCallbackDraft] = useState("");
   const [savingCallback, setSavingCallback] = useState(false);
+  const [returnURLDraft, setReturnURLDraft] = useState("");
+  const [successReturnURLDraft, setSuccessReturnURLDraft] = useState("");
+  const [failureReturnURLDraft, setFailureReturnURLDraft] = useState("");
+  const [savingReturnURLs, setSavingReturnURLs] = useState(false);
 
   const load = useCallback(async () => {
     setState("loading");
@@ -95,6 +99,14 @@ function MerchantDetailInner() {
       );
       setMerchant(data);
       setCallbackDraft(data.callback_url);
+      const { data: settings } = await apiGet<{
+        return_url: string;
+        success_return_url: string;
+        failure_return_url: string;
+      }>(`/merchants/${params.id}/settings`);
+      setReturnURLDraft(settings.return_url || "");
+      setSuccessReturnURLDraft(settings.success_return_url || "");
+      setFailureReturnURLDraft(settings.failure_return_url || "");
       setEnvironments(
         Array.isArray(meta.environments)
           ? (meta.environments as string[])
@@ -181,6 +193,23 @@ function MerchantDetailInner() {
       );
     } finally {
       setSavingCallback(false);
+    }
+  }
+
+  async function saveReturnURLs() {
+    if (!merchant) return;
+    setSavingReturnURLs(true);
+    try {
+      await apiMutate("PUT", `/merchants/${merchant.id}/settings`, {
+        return_url: returnURLDraft.trim(),
+        success_return_url: successReturnURLDraft.trim(),
+        failure_return_url: failureReturnURLDraft.trim(),
+      });
+      notify("Payer return URLs updated.");
+    } catch (cause) {
+      notify(cause instanceof ApiError ? `Update failed: ${cause.message}` : "Update failed.");
+    } finally {
+      setSavingReturnURLs(false);
     }
   }
 
@@ -282,6 +311,57 @@ function MerchantDetailInner() {
                       onClick={() => void saveCallback()}
                     >
                       {savingCallback ? "Saving…" : "Save URL"}
+                    </Button>
+                  </div>
+                ) : null}
+              </PanelBody>
+            </Panel>
+
+            <Panel>
+              <PanelHeader
+                title="Payer return URLs"
+                hint="Used for e-wallet redirects when a payment request does not provide its own URL."
+              />
+              <PanelBody className="grid gap-3">
+                <Field label="Default return URL" htmlFor="merchant-return-url">
+                  <Input
+                    id="merchant-return-url"
+                    type="url"
+                    disabled={!canManage}
+                    value={returnURLDraft}
+                    onChange={(event) => setReturnURLDraft(event.target.value)}
+                    placeholder="https://merchant.example/payment/return"
+                  />
+                </Field>
+                <Field label="Success return URL" htmlFor="merchant-success-return-url">
+                  <Input
+                    id="merchant-success-return-url"
+                    type="url"
+                    disabled={!canManage}
+                    value={successReturnURLDraft}
+                    onChange={(event) => setSuccessReturnURLDraft(event.target.value)}
+                    placeholder="Uses the default return URL when empty"
+                  />
+                </Field>
+                <Field label="Failure return URL" htmlFor="merchant-failure-return-url">
+                  <Input
+                    id="merchant-failure-return-url"
+                    type="url"
+                    disabled={!canManage}
+                    value={failureReturnURLDraft}
+                    onChange={(event) => setFailureReturnURLDraft(event.target.value)}
+                    placeholder="Uses the default return URL when empty"
+                  />
+                </Field>
+                {canManage ? (
+                  <div>
+                    <Button
+                      variant="secondary"
+                      className="min-h-11"
+                      disabled={savingReturnURLs}
+                      onClick={() => void saveReturnURLs()}
+                    >
+                      {savingReturnURLs ? "Saving…" : "Save return URLs"}
                     </Button>
                   </div>
                 ) : null}

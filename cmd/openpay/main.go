@@ -115,6 +115,7 @@ func serve() error {
 
 	txRepo := postgres.NewTransactionRepository(pool)
 	merchantRepo := postgres.NewMerchantRepository(pool)
+	merchantSettingsRepo := postgres.NewMerchantSettingsRepository(pool)
 	deliveryRepo := postgres.NewWebhookRepository(pool)
 	adminUserRepo := postgres.NewAdminUserRepository(pool)
 	adminSessionRepo := postgres.NewAdminSessionRepository(pool)
@@ -169,12 +170,13 @@ func serve() error {
 	dispatcher.SetActivityRepository(activityRepo)
 
 	engine := core.New(core.Deps{
-		Registry:     registry,
-		Router:       core.NewRouter(registry),
-		Transactions: txRepo,
-		Merchants:    merchantRepo,
-		Notifier:     dispatcher,
-		Logger:       log,
+		Registry:         registry,
+		Router:           core.NewRouter(registry),
+		Transactions:     txRepo,
+		Merchants:        merchantRepo,
+		MerchantSettings: merchantSettingsRepo,
+		Notifier:         dispatcher,
+		Logger:           log,
 	})
 
 	receiver := webhook.NewReceiver(registry, engine, inboundRepo, log)
@@ -197,6 +199,7 @@ func serve() error {
 		Audit:              auditRepo,
 		APIKeys:            apiKeysRepo,
 		Merchants:          merchantRepo,
+		MerchantSettings:   merchantSettingsRepo,
 		Transactions:       txRepo,
 		Deliveries:         deliveryRepo,
 		Inbound:            inboundRepo,

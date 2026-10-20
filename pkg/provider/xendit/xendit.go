@@ -339,8 +339,8 @@ func (p *Provider) buildPaymentRequest(req *provider.CreatePaymentRequest) (*pay
 // redirectProperties builds the success/failure return URLs used by the
 // redirect-based flows.
 func (p *Provider) redirectProperties(req *provider.CreatePaymentRequest) map[string]any {
-	success := firstNonEmpty(req.Metadata["success_return_url"], req.CallbackURL, p.returnURL)
-	failure := firstNonEmpty(req.Metadata["failure_return_url"], req.CallbackURL, p.returnURL)
+	success := firstNonEmpty(req.Metadata["success_return_url"], req.SuccessReturnURL, req.Metadata["return_url"], req.ReturnURL, p.returnURL)
+	failure := firstNonEmpty(req.Metadata["failure_return_url"], req.FailureReturnURL, req.Metadata["return_url"], req.ReturnURL, p.returnURL)
 	var props map[string]any
 	if success != "" || failure != "" {
 		props = map[string]any{}
