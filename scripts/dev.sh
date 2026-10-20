@@ -10,11 +10,15 @@ DASHBOARD_URL=${AWSEMPAY_DASHBOARD_URL:-http://127.0.0.1:3000/login}
 API_PORT=${AWSEMPAY_API_PORT:-8080}
 DASHBOARD_PORT=${AWSEMPAY_DASHBOARD_PORT:-3000}
 TIMEOUT=${AWSEMPAY_DEV_TIMEOUT:-30}
+STOP_TIMEOUT=${AWSEMPAY_DEV_STOP_TIMEOUT:-5}
 
 usage() { echo "usage: $0 {start|stop}" >&2; exit 2; }
 log_path() { printf '%s/%s.log' "$STATE_DIR" "$1"; }
 pid_path() { printf '%s/%s.pid' "$STATE_DIR" "$1"; }
 proc_start_time() { awk '{print $22}' "/proc/$1/stat" 2>/dev/null; }
+group_is_running() {
+  ps -eo pgid=,stat= | awk -v pgid="$1" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'
+}
 
 record_is_owned() {
   local service=$1 file pid start marker actual_start cmdline pgid
@@ -77,10 +81,17 @@ start_service() {
   setsid bash -c '
     marker=$1
     shift
-    trap "exit 0" TERM INT
+    trap : TERM INT
     "$@" &
     child=$!
-    wait "$child"
+    while kill -0 "$child" 2>/dev/null; do
+      wait "$child"
+      result=$?
+    done
+    while setsid bash -c '\''ps -eo pid=,pgid=,stat= | awk -v leader="$1" '\'\''$2 == leader && $1 != leader && $3 !~ /^Z/ { found=1 } END { exit !found }'\'\'''\'' _ "$$"; do
+      sleep 0.1
+    done
+    exit "${result:-0}"
   ' _ "$marker" bash -c "$command" >"$(log_path "$service")" 2>&1 &
   pid=$!
   start=$(proc_start_time "$pid")
@@ -90,7 +101,7 @@ start_service() {
 }
 
 stop_service() {
-  local service=$1 file pid
+  local service=$1 file pid elapsed=0
   file=$(pid_path "$service")
   [ -e "$file" ] || return 0
   if ! record_is_owned "$service"; then
@@ -100,7 +111,15 @@ stop_service() {
   fi
   read -r pid _ <"$file"
   echo "  $service stopping"
-  kill -TERM -- "-$pid"
+  kill -TERM -- "-$pid" 2>/dev/null || true
+  while group_is_running "$pid"; do
+    if (( elapsed >= STOP_TIMEOUT * 10 )); then
+      echo "  $service did not stop within ${STOP_TIMEOUT}s; ownership retained at $file; see $(log_path "$service")" >&2
+      return 1
+    fi
+    sleep 0.1
+    ((elapsed += 1))
+  done
   rm -f "$file"
 }
 
@@ -112,6 +131,12 @@ case ${1:-} in
     start_service api "$API_COMMAND" "$API_URL" "$API_PORT" || exit 1
     start_service dashboard "$DASHBOARD_COMMAND" "$DASHBOARD_URL" "$DASHBOARD_PORT" || exit 1
     ;;
-  stop) stop_service api; stop_service dashboard ;;
+  stop)
+    [[ "$STOP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "AWSEMPAY_DEV_STOP_TIMEOUT must be a positive integer" >&2; exit 2; }
+    result=0
+    stop_service api || result=1
+    stop_service dashboard || result=1
+    exit "$result"
+    ;;
   *) usage ;;
 esac

@@ -306,7 +306,10 @@ bash scripts/dev_test.sh
 ```
 
 `make dev` starts the local API and console together; `make dev-stop` stops the
-supervised process groups. Setup's unload warning belongs to the page, so Back and
+supervised process groups. Stop waits for each owned group to exit, bounded by
+`AWSEMPAY_DEV_STOP_TIMEOUT` (positive integer seconds, default 5). A timeout
+returns nonzero and retains the ownership record rather than force-killing or
+forgetting the group. Setup's unload warning belongs to the page, so Back and
 reopening a skipped step do not clear it before one-time secrets are acknowledged.
 
 The console suites are plain `node:test` files: `test:setup` covers the setup

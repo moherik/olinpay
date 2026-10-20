@@ -4,10 +4,14 @@ set -u -o pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DEV_SCRIPT="$ROOT/scripts/dev.sh"
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d /tmp/opencode/dev-tests.XXXXXX)
 PIDS=()
+GROUPS_TO_CLEAN=()
 
 cleanup() {
+  for pid in "${GROUPS_TO_CLEAN[@]}"; do
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  done
   for pid in "${PIDS[@]}"; do
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
@@ -52,6 +56,7 @@ PY
 cat >"$TMPDIR/fake-service.py" <<'PY'
 #!/usr/bin/env python3
 import http.server
+import signal
 import sys
 import time
 
@@ -63,6 +68,13 @@ if mode == "never":
     sys.exit(0)
 if mode == "delayed":
     time.sleep(float(sys.argv[3]))
+if mode == "slow-stop":
+    def stop(signum, frame):
+        time.sleep(1.5)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, stop)
+if mode == "resist-stop":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -111,7 +123,12 @@ scenario_occupied_unhealthy_port() {
   local state="$TMPDIR/occupied" api_port dashboard_port api_cmd dashboard_cmd external
   state="$TMPDIR/occupied"; api_port=$(port); dashboard_port=$(port)
   "$TMPDIR/fake-service.py" unhealthy "$api_port" & external=$!; PIDS+=("$external")
-  sleep 0.1
+  local ready=false attempt
+  for attempt in $(seq 1 100); do
+    if curl --silent --max-time 1 "http://127.0.0.1:$api_port/ready" >/dev/null; then ready=true; break; fi
+    sleep 0.05
+  done
+  [ "$ready" = true ] || fail "external occupied-port fixture did not start"
   mkdir -p "$state"
   api_cmd=$(service_command healthy "$api_port" "$state/api-launches")
   dashboard_cmd=$(service_command healthy "$dashboard_port" "$state/dashboard-launches")
@@ -184,6 +201,58 @@ scenario_stop_only_owned_group() {
   assert_alive "$unrelated"
 }
 
+scenario_stop_waits_for_group() {
+  local state="$TMPDIR/slow-stop" api_port dashboard_port api_cmd dashboard_cmd stop_pid
+  api_port=$(port); dashboard_port=$(port); mkdir -p "$state"
+  api_cmd=$(service_command slow-stop "$api_port" "$state/api-launches")
+  dashboard_cmd=$(service_command healthy "$dashboard_port" "$state/dashboard-launches")
+  AWSEMPAY_API_COMMAND="$api_cmd" AWSEMPAY_DASHBOARD_COMMAND="$dashboard_cmd" \
+    run_dev "$state" "$api_port" "$dashboard_port" bash "$DEV_SCRIPT" start || fail "slow-stop start failed"
+  local api_pid dashboard_pid
+  read -r api_pid _ <"$state/api.pid"
+  read -r dashboard_pid _ <"$state/dashboard.pid"
+  GROUPS_TO_CLEAN+=("$api_pid" "$dashboard_pid")
+  run_dev "$state" "$api_port" "$dashboard_port" bash "$DEV_SCRIPT" stop & stop_pid=$!
+  sleep 0.4
+  assert_alive "$stop_pid"
+  [ -f "$state/api.pid" ] || fail "ownership record removed before group exited"
+  wait "$stop_pid" || fail "slow-stop failed"
+  [ ! -e "$state/api.pid" ] || fail "exited group retained its record"
+  if curl --silent --fail --max-time 1 "http://127.0.0.1:$api_port/ready" >/dev/null; then
+    fail "stop returned before service released its port"
+  fi
+}
+
+scenario_stop_retains_resistant_group() {
+  local state="$TMPDIR/resist-stop" api_port dashboard_port api_cmd dashboard_cmd output api_pid dashboard_pid unrelated
+  api_port=$(port); dashboard_port=$(port); mkdir -p "$state"
+  api_cmd=$(service_command resist-stop "$api_port" "$state/api-launches")
+  dashboard_cmd=$(service_command healthy "$dashboard_port" "$state/dashboard-launches")
+  AWSEMPAY_API_COMMAND="$api_cmd" AWSEMPAY_DASHBOARD_COMMAND="$dashboard_cmd" \
+    run_dev "$state" "$api_port" "$dashboard_port" bash "$DEV_SCRIPT" start || fail "resist-stop start failed"
+  read -r api_pid _ <"$state/api.pid"
+  read -r dashboard_pid _ <"$state/dashboard.pid"
+  GROUPS_TO_CLEAN+=("$api_pid" "$dashboard_pid")
+  sleep 30 & unrelated=$!; PIDS+=("$unrelated")
+  if output=$(AWSEMPAY_DEV_STOP_TIMEOUT=1 run_dev "$state" "$api_port" "$dashboard_port" bash "$DEV_SCRIPT" stop 2>&1); then
+    fail "TERM-resistant service reported successful stop"
+  fi
+  [[ "$output" == *"did not stop within 1s"* ]] || fail "missing shutdown timeout diagnosis"
+  [ -f "$state/api.pid" ] || fail "resistant group lost ownership record"
+  assert_alive "$api_pid"
+  assert_alive "$unrelated"
+  [ ! -e "$state/dashboard.pid" ] || fail "API failure prevented dashboard shutdown"
+  if AWSEMPAY_DEV_STOP_TIMEOUT=1 run_dev "$state" "$api_port" "$dashboard_port" bash "$DEV_SCRIPT" stop; then
+    fail "second stop discarded resistant ownership"
+  fi
+  [ -f "$state/api.pid" ] || fail "second stop lost ownership record"
+}
+
+if (( $# > 0 )); then
+  for scenario in "$@"; do "$scenario"; done
+  exit 0
+fi
+
 scenario_healthy_reuse
 scenario_occupied_unhealthy_port
 scenario_delayed_readiness
@@ -191,5 +260,7 @@ scenario_early_exit_reports_log
 scenario_timeout
 scenario_stale_pid_replaced
 scenario_stop_only_owned_group
+scenario_stop_waits_for_group
+scenario_stop_retains_resistant_group
 
 echo "PASS: development process supervision scenarios"

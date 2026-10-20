@@ -147,7 +147,10 @@ still exists; finish the wizard, then create or manage the key from **API keys**
 in the console.
 
 For local API and console development together, use `make dev`; stop the
-supervised process groups with `make dev-stop`.
+supervised process groups with `make dev-stop`. Stop waits up to five seconds
+per service (`AWSEMPAY_DEV_STOP_TIMEOUT` overrides this positive integer timeout).
+If a group resists TERM, stop returns nonzero and retains its ownership record
+for diagnosis and a later stop attempt; it does not force-kill the group.
 
 Create a payment:
 

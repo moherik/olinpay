@@ -66,7 +66,8 @@ provider debug logging) are flag-gated off rather than shown greyed out.
 - One-time secrets (merchant webhook secret, API key, invited user password)
   are displayed once and then only stored hashed.
 - `make dev` starts the local backend and console together; use `make dev-stop`
-  to stop the supervised process groups.
+  to stop the supervised process groups. Stop waits for each group to exit and
+  keeps its ownership record when a group resists `TERM`.
 - The shell collapses to a labeled **Menu** on narrow screens: brand and Menu
   keep the first row, the environment and account controls reflow into a second
   one, and the account email appears only where the trigger expands.
