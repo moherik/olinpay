@@ -42,16 +42,15 @@ export function ConfirmDialog({
             <DialogClose asChild>
               <Button variant="secondary">{cancelLabel}</Button>
             </DialogClose>
-            <Button
-              variant={confirmVariant}
-              disabled={disabled}
-              onClick={() => {
-                onConfirm();
-                onOpenChange?.(false);
-              }}
-            >
-              {confirmLabel}
-            </Button>
+            <DialogClose asChild>
+              <Button
+                variant={confirmVariant}
+                disabled={disabled}
+                onClick={onConfirm}
+              >
+                {confirmLabel}
+              </Button>
+            </DialogClose>
           </>
         }
       >

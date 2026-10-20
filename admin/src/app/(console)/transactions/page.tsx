@@ -451,7 +451,7 @@ export default function TransactionsPage() {
                 disabled={cancelling}
                 onClick={() => void confirmCancel()}
               >
-                {cancelling ? "Cancelling…" : "Cancel payment"}
+                {cancelling ? "Cancelling…" : "Confirm cancellation"}
               </Button>
             </>
           }

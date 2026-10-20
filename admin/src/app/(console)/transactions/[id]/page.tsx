@@ -215,7 +215,7 @@ function TransactionDetailInner() {
               }
               title={`Cancel ${mapped.reference}?`}
               description="Cancelling tells the gateway to void the payment. A pending payment can still be paid until the gateway confirms."
-              confirmLabel={cancelAvailable ? "Cancel payment" : undefined}
+              confirmLabel="Confirm cancellation"
               onConfirm={() => void cancelPayment()}
             />
           </>

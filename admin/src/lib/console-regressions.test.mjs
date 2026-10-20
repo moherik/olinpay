@@ -10,6 +10,18 @@ const setup = readFileSync(
   new URL("../app/setup/page.tsx", import.meta.url),
   "utf8",
 );
+const transactionDetail = readFileSync(
+  new URL("../app/(console)/transactions/[id]/page.tsx", import.meta.url),
+  "utf8",
+);
+const transactions = readFileSync(
+  new URL("../app/(console)/transactions/page.tsx", import.meta.url),
+  "utf8",
+);
+const confirmDialog = readFileSync(
+  new URL("../components/ui/confirm-dialog.tsx", import.meta.url),
+  "utf8",
+);
 
 const header = shell.slice(shell.indexOf("<header"), shell.indexOf("</header>"));
 
@@ -86,4 +98,12 @@ test("the setup page owns the unload warning, not the merchant form", () => {
 
 test("setup secrets stay in memory", () => {
   assert.doesNotMatch(setup, /localStorage|sessionStorage|document\.cookie/);
+});
+
+test("payment cancellation requests run from an explicit confirmation action", () => {
+  assert.match(transactionDetail, /confirmLabel="Confirm cancellation"/);
+  assert.match(transactionDetail, /onConfirm=\{\(\) => void cancelPayment\(\)\}/);
+  assert.match(transactions, /onClick=\{\(\) => void confirmCancel\(\)\}/);
+  assert.match(transactions, /"Confirm cancellation"/);
+  assert.match(confirmDialog, /<DialogClose asChild>\s*<Button[\s\S]*?onClick=\{onConfirm\}/);
 });
