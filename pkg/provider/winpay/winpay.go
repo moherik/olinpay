@@ -2,13 +2,14 @@
 // (winpay.id), an Indonesian payment gateway (PJP) that exposes Bank
 // Indonesia's SNAP API standard.
 //
-// It covers the three products documented at
+// It covers the four products documented at
 // https://docs.winpay.id/en/payments/snap-api:
 //
 //   - Virtual Account — one-off (c), open-recurring (o) and close-recurring (r)
 //     VAs. Channels: BRI, BNI, MANDIRI, PERMATA, BSI, MUAMALAT, BCA, CIMB,
 //     SINARMAS, BNC, MAYBANK, DANAMON, JATIM, and the BCAPC/MANDIRIPC payment
 //     codes.
+//   - Modern Retail — one-off payment codes for INDOMARET, ALFAMART and FASTPAY.
 //   - QRIS — dynamic and static merchant-presented QR.
 //   - eWallet — Speedcash (SC), OVO, DANA and ShopeePay (SPAY).
 //
@@ -229,8 +230,11 @@ func (p *Provider) Name() string { return Name }
 // Capabilities implements [provider.Provider].
 func (p *Provider) Capabilities() provider.Capabilities {
 	// Sorted so the list is stable across calls (it is exposed through the API).
-	channels := make([]string, 0, len(vaChannels)+len(ewalletChannels)+1)
+	channels := make([]string, 0, len(vaChannels)+len(retailChannels)+len(ewalletChannels)+1)
 	for code := range vaChannels {
+		channels = append(channels, code)
+	}
+	for code := range retailChannels {
 		channels = append(channels, code)
 	}
 	channels = append(channels, "QRIS")
@@ -241,6 +245,7 @@ func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
 		Methods: []provider.Method{
 			provider.MethodVirtualAccount,
+			provider.MethodRetailOutlet,
 			provider.MethodQRIS,
 			provider.MethodEWallet,
 		},
@@ -267,6 +272,8 @@ func (p *Provider) CreatePayment(ctx context.Context, req *provider.CreatePaymen
 	}
 	switch req.Method {
 	case provider.MethodVirtualAccount:
+		return p.createVA(ctx, req)
+	case provider.MethodRetailOutlet:
 		return p.createVA(ctx, req)
 	case provider.MethodQRIS:
 		return p.createQRIS(ctx, req)
@@ -302,10 +309,23 @@ func (p *Provider) createVA(ctx context.Context, req *provider.CreatePaymentRequ
 		return nil, provider.NewError(Name, opCreate, "INVALID_REQUEST",
 			"virtual accounts require a channel code (e.g. BCA, BNI, MANDIRI)", provider.ErrInvalidRequest)
 	}
+	if req.Method == provider.MethodRetailOutlet {
+		if !retailChannels[channel] {
+			return nil, provider.NewError(Name, opCreate, "INVALID_REQUEST",
+				fmt.Sprintf("unsupported modern retail channel %q (INDOMARET, ALFAMART, FASTPAY)", req.Channel), provider.ErrInvalidRequest)
+		}
+	} else if !vaChannels[channel] {
+		return nil, provider.NewError(Name, opCreate, "INVALID_REQUEST",
+			fmt.Sprintf("unsupported virtual account channel %q", req.Channel), provider.ErrInvalidRequest)
+	}
 
 	trxType := strings.ToLower(strings.TrimSpace(req.Metadata["va_trx_type"]))
 	if trxType == "" {
 		trxType = vaTypeOneOff
+	}
+	if req.Method == provider.MethodRetailOutlet && trxType != vaTypeOneOff {
+		return nil, provider.NewError(Name, opCreate, "INVALID_REQUEST",
+			`modern retail payments only support metadata "va_trx_type" = "c"`, provider.ErrInvalidRequest)
 	}
 	switch trxType {
 	case vaTypeOneOff, vaTypeOpen, vaTypeClose:
@@ -362,7 +382,7 @@ func (p *Provider) createVA(ctx context.Context, req *provider.CreatePaymentRequ
 		providerRef: data.AdditionalInfo.ContractID,
 		paymentCode: vaNo,
 		channel:     firstNonEmpty(data.AdditionalInfo.Channel, channel),
-		method:      provider.MethodVirtualAccount,
+		method:      req.Method,
 		trxID:       reference,
 		amount:      amount,
 	})
@@ -470,12 +490,12 @@ func (p *Provider) createEWallet(ctx context.Context, req *provider.CreatePaymen
 			"e-wallets require customer.phone", provider.ErrInvalidRequest)
 	}
 	callback := firstNonEmpty(req.CallbackURL, p.callbackURL)
-	if callback == "" {
+	returnURL := firstNonEmpty(req.Metadata["return_url"], callback)
+	if returnURL == "" {
 		return nil, provider.NewError(Name, opCreate, "INVALID_REQUEST",
-			"e-wallets require a callback URL: set the provider callback_url or pass callback_url per payment",
+			"e-wallets require a callback URL: set the provider return_url or pass return_url per payment",
 			provider.ErrInvalidRequest)
 	}
-	returnURL := firstNonEmpty(req.Metadata["return_url"], callback)
 
 	payload := createEWalletRequest{
 		PartnerReferenceNo: req.ReferenceID,
@@ -555,6 +575,8 @@ func (p *Provider) Inquiry(ctx context.Context, req *provider.InquiryRequest) (*
 	}
 	switch rec.method {
 	case provider.MethodVirtualAccount:
+		return p.inquireVA(ctx, req, rec)
+	case provider.MethodRetailOutlet:
 		return p.inquireVA(ctx, req, rec)
 	case provider.MethodQRIS:
 		return p.inquireQRIS(ctx, req, rec)
@@ -705,6 +727,8 @@ func (p *Provider) Cancel(ctx context.Context, req *provider.CancelRequest) (*pr
 	switch rec.method {
 	case provider.MethodVirtualAccount:
 		return p.cancelVA(ctx, rec, trxID, reason)
+	case provider.MethodRetailOutlet:
+		return p.cancelVA(ctx, rec, trxID, reason)
 	case provider.MethodQRIS:
 		return p.cancelQRIS(ctx, rec, trxID, reason)
 	case provider.MethodEWallet:
@@ -814,7 +838,7 @@ func (p *Provider) cancelEWallet(ctx context.Context, rec *record, trxID, reason
 
 // --- callbacks -------------------------------------------------------------
 
-// ParseWebhook implements [provider.Provider]. It recognizes the three
+// ParseWebhook implements [provider.Provider]. It recognizes the four
 // documented callback shapes and maps them onto a unified [provider.WebhookEvent].
 func (p *Provider) ParseWebhook(ctx context.Context, req *provider.WebhookRequest) (*provider.WebhookEvent, error) {
 	if err := ctx.Err(); err != nil {
@@ -897,8 +921,8 @@ func (p *Provider) VerifyWebhookSignature(req *provider.WebhookRequest) error {
 		return provider.NewError(Name, opVerify, "MISSING_HEADERS",
 			"callback is missing "+headerSignature+" or "+headerTimestamp, provider.ErrInvalidSignature)
 	}
-	endpoint := firstNonEmpty(p.callbackPath, req.Path)
-	if endpoint == "" {
+	endpoints := p.callbackEndpoints(req)
+	if len(endpoints) == 0 {
 		return provider.NewError(Name, opVerify, "MISSING_PATH",
 			"cannot determine the callback path used in the signature", provider.ErrInvalidSignature)
 	}
@@ -906,10 +930,50 @@ func (p *Provider) VerifyWebhookSignature(req *provider.WebhookRequest) error {
 	if err != nil {
 		return provider.NewError(Name, opVerify, "BAD_JSON", err.Error(), provider.ErrInvalidSignature)
 	}
-	if err := verifySignature(p.publicKey, http.MethodPost, endpoint, body, timestamp, signature); err != nil {
-		return provider.NewError(Name, opVerify, "BAD_SIGNATURE", err.Error(), provider.ErrInvalidSignature)
+	var lastErr error
+	for _, endpoint := range endpoints {
+		if err := verifySignature(p.publicKey, http.MethodPost, endpoint, body, timestamp, signature); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
 	}
-	return nil
+	return provider.NewError(Name, opVerify, "BAD_SIGNATURE", lastErr.Error(), provider.ErrInvalidSignature)
+}
+
+// callbackEndpoints returns the request path first, followed by the optional
+// configured path and Winpay's documented SNAP callback paths. This lets one
+// public callback URL accept the per-product suffixes Winpay uses while still
+// signing the exact path when the reverse proxy preserves it.
+func (p *Provider) callbackEndpoints(req *provider.WebhookRequest) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path != "" && !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	add(req.Path)
+	add(p.callbackPath)
+
+	var payload callbackPayload
+	if json.Unmarshal(req.Body, &payload) == nil {
+		if payload.PaidAmount != nil || strings.TrimSpace(payload.VirtualAccountNo) != "" {
+			add("/v1.0/transfer-va/payment")
+		}
+		if strings.TrimSpace(payload.LatestTransactionStatus) != "" {
+			switch channelMethod(payload.AdditionalInfo.Channel) {
+			case provider.MethodQRIS:
+				add("/v1.0/qr/qr-mpm-notify")
+				add("/sandbox_prod/url_listener.php/v1.0/qr/qr-mpm-notify")
+			case provider.MethodEWallet:
+				add("/v1.0/debit/notify")
+			}
+		}
+	}
+	return out
 }
 
 // WebhookResponse implements [provider.WebhookResponder], returning the SNAP

@@ -84,6 +84,10 @@ func (r *Receiver) SetEnvironmentResolver(fn func(providerName string) string) {
 // path segment, e.g. POST /webhooks/mock.
 func (r *Receiver) Mount(router chi.Router) {
 	router.Post("/webhooks/{provider}", r.Handle)
+	// Winpay and other SNAP gateways may append a product-specific callback
+	// path to the provider callback base URL. Keep the provider in the first
+	// path segment while preserving the complete suffix for signature checks.
+	router.Post("/webhooks/{provider}/*", r.Handle)
 }
 
 // Handle processes one inbound gateway callback.

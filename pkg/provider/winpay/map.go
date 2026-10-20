@@ -35,6 +35,11 @@ var vaChannels = map[string]bool{
 	"MAYBANK": true, "DANAMON": true, "JATIM": true, "BCAPC": true, "MANDIRIPC": true,
 }
 
+// retailChannels lists the Winpay modern-retail payment-code channels.
+var retailChannels = map[string]bool{
+	"INDOMARET": true, "ALFAMART": true, "FASTPAY": true,
+}
+
 // ewalletChannels lists the e-wallet channel codes documented for eWallets.
 var ewalletChannels = map[string]bool{
 	"SC": true, "OVO": true, "DANA": true, "SPAY": true,
@@ -53,6 +58,8 @@ func channelMethod(channel string) provider.Method {
 		return provider.MethodEWallet
 	case vaChannels[code]:
 		return provider.MethodVirtualAccount
+	case retailChannels[code]:
+		return provider.MethodRetailOutlet
 	default:
 		return ""
 	}

@@ -152,10 +152,11 @@ The adapter at `pkg/provider/winpay` targets documented Winpay SNAP endpoints:
 | Method | Operations |
 | --- | --- |
 | VA | `/v1.0/transfer-va/create-va`, `inquiry-va`, `status`, `delete-va` |
+| Modern Retail | `/v1.0/transfer-va/create-va`, `inquiry-va`, `status`, `delete-va` with `INDOMARET`, `ALFAMART`, or `FASTPAY` |
 | QRIS | `/v1.0/qr/qr-mpm-generate`, `qr-mpm-query`, `qr-mpm-cancel` |
 | eWallet | `/v1.0/debit/payment-host-to-host`, `status`, `cancel` |
 
-It uses SNAP RSA-SHA256 PKCS#1 v1.5 signing, compact JSON body hash and endpoint path; headers include `X-TIMESTAMP`, `X-SIGNATURE`, `X-PARTNER-ID`, `X-EXTERNAL-ID`, and `CHANNEL-ID`. Public/private RSA key accepts PEM or base64 DER. Callback path is part of signature construction: receiver populates `WebhookRequest.Path`; `callback_path` config can override it. Winpay ack codes vary by callback product and are supplied through `WebhookResponder`.
+It uses SNAP RSA-SHA256 PKCS#1 v1.5 signing, compact JSON body hash and endpoint path; headers include `X-TIMESTAMP`, `X-SIGNATURE`, `X-PARTNER-ID`, `X-EXTERNAL-ID`, and `CHANNEL-ID`. Public/private RSA key accepts PEM or base64 DER. One callback base URL can receive Winpay's product-specific path suffixes; the receiver preserves the complete request path and the adapter verifies it against the configured or documented callback paths. Winpay ack codes vary by callback product and are supplied through `WebhookResponder`.
 
 Config keys: `partner_id` (required), `private_key` (required), `public_key` (strongly required in production for inbound verification), `base_url` (sandbox default; production URL must be configured), `channel_id` (default `WEB`), `callback_url` (needed for eWallet `PAY_NOTIFY`), `callback_path` (optional), `default_expiry`, `timeout`.
 
@@ -304,7 +305,7 @@ Most tests are DB-free. `pkg/provider` tests cover the shared request/response t
 
 ## 11. Current status and roadmap
 
-Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/QRIS/eWallet), Midtrans legacy Core API adapter (VA/QRIS/eWallet/retail outlet), Midtrans BI-SNAP adapter (VA/QRIS/eWallet), Xendit Payments API v3 adapter (VA/QRIS/eWallet/retail outlet/pay later/card), DOKU SNAP adapter (VA/QRIS/eWallet), provider API request/response tracing, provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
+Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/Modern Retail/QRIS/eWallet), Midtrans legacy Core API adapter (VA/QRIS/eWallet/retail outlet), Midtrans BI-SNAP adapter (VA/QRIS/eWallet), Xendit Payments API v3 adapter (VA/QRIS/eWallet/retail outlet/pay later/card), DOKU SNAP adapter (VA/QRIS/eWallet), provider API request/response tracing, provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
 
 Known/planned: persist Winpay/Midtrans BI-SNAP/DOKU gateway correlation values (the legacy Midtrans Core API adapter needs none); live sandbox verification; additional gateway adapters; first-class refunds; production queue/metrics/dashboards (provider-request tracing already ships); stronger recovery for provider success followed by DB failure; email flows for console accounts (password reset/invite). Do not claim roadmap items are implemented.
 

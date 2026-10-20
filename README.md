@@ -403,14 +403,18 @@ the mock provider fakes:
   `contractId` (and a VA number) it returned at creation; the adapter keeps a
   short-lived cache of those, since the unified contract does not carry them.
 
-It supports Virtual Accounts, QRIS and eWallets. Enable it from the console's
+It supports Virtual Accounts, QRIS, eWallets and Modern Retail payment codes. Enable it from the console's
 Providers page: save `partner_id` and `private_key` for the sandbox
 environment, plus `public_key`, `base_url` and `callback_url` as needed. The
 credentials are stored in the database and hot-reload without a restart. The
 `OPENPAY_PROVIDER_WINPAY_*` environment variables carry the same keys for a
 bare deployment.
 
-Point Winpay's merchant callback at `POST /webhooks/winpay`. Leave
+Point Winpay's callback base URL at `/webhooks/winpay`. The webhook engine also
+accepts the product-specific suffixes Winpay appends, including
+`/v1.0/transfer-va/payment` for Virtual Account and Modern Retail callbacks,
+`/v1.0/qr/qr-mpm-notify` for QRIS, and `/v1.0/debit/notify` for eWallets.
+The full received path is retained for SNAP signature verification. Leave
 `PUBLIC_KEY` empty to skip signature verification (development only).
 
 ### A real-world example: Midtrans (legacy Core API)

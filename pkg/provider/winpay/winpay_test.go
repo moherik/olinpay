@@ -401,7 +401,7 @@ func TestCreateUnsupportedMethod(t *testing.T) {
 	p := newTestProvider(t, g, nil)
 
 	_, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
-		ReferenceID: "ref-1", Amount: 10000, Method: provider.MethodRetailOutlet,
+		ReferenceID: "ref-1", Amount: 10000, Method: provider.MethodCard,
 	})
 	if !errors.Is(err, provider.ErrUnsupportedOperation) {
 		t.Fatalf("expected ErrUnsupportedOperation, got %v", err)
@@ -709,6 +709,54 @@ func TestParseWebhookEWallet(t *testing.T) {
 	}
 }
 
+func TestCreateModernRetailPayment(t *testing.T) {
+	g := newTestGateway(t)
+	p := newTestProvider(t, g, nil)
+	g.on(pathCreateVA, `{
+		"responseCode": "2002700", "responseMessage": "Success",
+		"virtualAccountData": {
+			"virtualAccountNo": "99887766", "trxId": "retail-1",
+			"totalAmount": {"value": "25000.00", "currency": "IDR"},
+			"expiredDate": "2024-01-11T10:00:00+07:00",
+			"additionalInfo": {"channel": "INDOMARET", "contractId": "retail-contract-1"}
+		}
+	}`)
+
+	resp, err := p.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "retail-1", Amount: 25000, Method: provider.MethodRetailOutlet, Channel: "INDOMARET",
+	})
+	if err != nil {
+		t.Fatalf("CreatePayment: %v", err)
+	}
+	if resp.ProviderReference != "retail-contract-1" || resp.PaymentCode != "99887766" {
+		t.Fatalf("response = %+v, want retail contract and payment code", resp)
+	}
+}
+
+func TestParseWebhookModernRetail(t *testing.T) {
+	g := newTestGateway(t)
+	p := newTestProvider(t, g, nil)
+	body := []byte(`{
+		"partnerServiceId": "   22691", "customerNo": "41693903614",
+		"virtualAccountNo": "   2269141693903614", "virtualAccountName": "Bayar",
+		"trxId": "retail-1", "paymentRequestId": "88889123",
+		"paidAmount": {"value": "10000", "currency": "IDR"},
+		"trxDateTime": "2024-01-11T10:00:00+07:00", "referenceNo": 36238,
+		"additionalInfo": {"channel": "INDOMARET", "contractId": "retail-contract-1"}
+	}`)
+
+	evt, err := p.ParseWebhook(context.Background(), &provider.WebhookRequest{Body: body})
+	if err != nil {
+		t.Fatalf("ParseWebhook: %v", err)
+	}
+	if evt.EventType != EventVAPayment || evt.Status != provider.StatusPaid {
+		t.Fatalf("event = %q status = %q, want VA payment/paid", evt.EventType, evt.Status)
+	}
+	if evt.ReferenceID != "retail-1" || evt.ProviderReference != "retail-contract-1" {
+		t.Fatalf("event references = %+v", evt)
+	}
+}
+
 func TestParseWebhookEnrichesReferenceFromCache(t *testing.T) {
 	g := newTestGateway(t)
 	p := newTestProvider(t, g, nil)
@@ -808,6 +856,26 @@ func TestVerifyWebhookSignatureUsesConfiguredPath(t *testing.T) {
 	}
 	if err := p.VerifyWebhookSignature(req); err != nil {
 		t.Errorf("configured callback_path was not honoured: %v", err)
+	}
+}
+
+func TestVerifyWebhookSignatureUsesDocumentedPathForCommonRoute(t *testing.T) {
+	g := newTestGateway(t)
+	p := newTestProvider(t, g, provider.Config{"public_key": publicKeyPEM(t, &g.key.PublicKey)})
+	body := []byte(`{"paidAmount":{"value":"10000","currency":"IDR"},"trxId":"retail-1","virtualAccountNo":"99887766","additionalInfo":{"channel":"INDOMARET","contractId":"retail-contract-1"}}`)
+	timestamp := "2024-01-11T08:57:55+07:00"
+	signature, err := signRequest(g.key, http.MethodPost, "/v1.0/transfer-va/payment", body, timestamp)
+	if err != nil {
+		t.Fatalf("signRequest: %v", err)
+	}
+
+	req := &provider.WebhookRequest{
+		Body:    body,
+		Path:    "/webhooks/winpay",
+		Headers: signatureHeaders(timestamp, signature),
+	}
+	if err := p.VerifyWebhookSignature(req); err != nil {
+		t.Fatalf("documented callback path rejected: %v", err)
 	}
 }
 
@@ -913,13 +981,14 @@ func TestParseAmount(t *testing.T) {
 
 func TestChannelMethod(t *testing.T) {
 	cases := map[string]provider.Method{
-		"QRIS":    provider.MethodQRIS,
-		"OVO":     provider.MethodEWallet,
-		"SPAY":    provider.MethodEWallet,
-		"BCA":     provider.MethodVirtualAccount,
-		"  bni  ": provider.MethodVirtualAccount,
-		"UNKNOWN": "",
-		"":        "",
+		"QRIS":      provider.MethodQRIS,
+		"OVO":       provider.MethodEWallet,
+		"SPAY":      provider.MethodEWallet,
+		"BCA":       provider.MethodVirtualAccount,
+		"INDOMARET": provider.MethodRetailOutlet,
+		"  bni  ":   provider.MethodVirtualAccount,
+		"UNKNOWN":   "",
+		"":          "",
 	}
 	for channel, want := range cases {
 		if got := channelMethod(channel); got != want {
@@ -997,16 +1066,13 @@ func TestCapabilities(t *testing.T) {
 	p := newTestProvider(t, g, nil)
 
 	caps := p.Capabilities()
-	for _, method := range []provider.Method{provider.MethodVirtualAccount, provider.MethodQRIS, provider.MethodEWallet} {
+	for _, method := range []provider.Method{provider.MethodVirtualAccount, provider.MethodRetailOutlet, provider.MethodQRIS, provider.MethodEWallet} {
 		if !caps.SupportsMethod(method) {
 			t.Errorf("expected %q to be supported", method)
 		}
 	}
-	if caps.SupportsMethod(provider.MethodRetailOutlet) {
-		t.Error("retail outlets are not supported")
-	}
-	if !caps.SupportsChannel("BCA") || !caps.SupportsChannel("QRIS") {
-		t.Error("expected VA and QRIS channels to be advertised")
+	if !caps.SupportsChannel("BCA") || !caps.SupportsChannel("QRIS") || !caps.SupportsChannel("INDOMARET") {
+		t.Error("expected VA, QRIS and modern-retail channels to be advertised")
 	}
 	// Channel matching must tolerate the case/whitespace callers use.
 	if !caps.SupportsChannel("bca") || !caps.SupportsChannel("  ovo  ") {

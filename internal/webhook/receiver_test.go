@@ -154,6 +154,22 @@ func TestReceiverAppliesCallbackAndQueuesMerchantWebhook(t *testing.T) {
 	}
 }
 
+func TestReceiverAcceptsProviderCallbackPathSuffix(t *testing.T) {
+	f := setup(t)
+	tx := createPayment(t, f)
+	body, _ := json.Marshal(map[string]any{
+		"reference_id":       tx.ReferenceID,
+		"provider_reference": tx.ProviderReference,
+		"status":             "paid",
+		"amount":             tx.Amount,
+	})
+
+	resp, raw := post(t, f, "/webhooks/mock/v1.0/transfer-va/payment", body, mock.Sign(gatewaySecret, body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("receiver status = %d, body = %s", resp.StatusCode, raw)
+	}
+}
+
 func TestReceiverRejectsBadSignature(t *testing.T) {
 	f := setup(t)
 	tx := createPayment(t, f)
