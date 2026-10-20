@@ -785,8 +785,9 @@ Provider credentials set through the console take priority over the
 adapter/environment replaces the env-built instance at save time (and when the
 process restarts). Env-configured instances remain the fallback so a bare
 `OPENPAY_PROVIDERS=xendit` deployment keeps working as before. With no
-`OPENPAY_PROVIDERS` at all the server boots purely from DB rows, and startup
-fails only when neither source has produced a provider instance.
+configured provider from either source, the server still starts for
+first-install administration, but payment creation returns a no-route error
+until a provider is configured.
 
 ### Provider API logging
 

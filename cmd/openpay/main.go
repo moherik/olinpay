@@ -258,9 +258,7 @@ func buildProviders(cfg *config.Config, log *slog.Logger) (*provider.Registry, e
 
 // buildRegistry assembles the provider registry: every provider listed in
 // OPENPAY_PROVIDERS is built from the environment, then DB-stored credentials
-// (console-saved) are instantiated on top. The empty-registry check runs after
-// the database build so a console-managed deployment boots without
-// OPENPAY_PROVIDERS at all.
+// (console-saved) are instantiated on top.
 func buildRegistry(cfg *config.Config, repo repository.ProviderConfigRepository, log *slog.Logger) (*provider.Registry, error) {
 	registry, err := buildProviders(cfg, log)
 	if err != nil {
@@ -268,8 +266,7 @@ func buildRegistry(cfg *config.Config, repo repository.ProviderConfigRepository,
 	}
 	buildProviderFromDB(repo, registry, log)
 	if registry.Len() == 0 {
-		return nil, errors.New(
-			"no providers configured; register one in the admin console (Providers page) or set OPENPAY_PROVIDERS (e.g. \"mock\")")
+		log.Warn("no providers configured; payment routing is unavailable until a provider is configured")
 	}
 	return registry, nil
 }
