@@ -14,12 +14,14 @@ export function DialogContent({
   footer,
   children,
   className,
+  closeClassName,
 }: {
   title: string;
   description?: string;
   footer?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  closeClassName?: string;
 }) {
   return (
     <Dialog.Portal>
@@ -43,7 +45,10 @@ export function DialogContent({
           </div>
           <Dialog.Close
             aria-label="Close dialog"
-            className="rounded-[3px] p-1 text-muted transition-colors hover:bg-surface-muted hover:text-ink"
+            className={cn(
+              "rounded-[3px] p-1 text-muted transition-colors hover:bg-surface-muted hover:text-ink",
+              closeClassName,
+            )}
           >
             <IconClose size={16} />
           </Dialog.Close>

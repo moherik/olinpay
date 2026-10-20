@@ -139,7 +139,7 @@ export default function SetupPage() {
   }
 
   return (
-    <div className="flex min-h-dvh items-start justify-center p-6 [&_button]:min-h-11 sm:[&_button]:min-h-0">
+    <div className="flex min-h-dvh items-start justify-center p-6 [&_button]:min-h-11 lg:[&_button]:min-h-0">
       <div className="flex w-full max-w-2xl flex-col gap-4">
         <div className="pb-1">
           <h1 className="text-[15px] font-medium text-ink">
@@ -284,7 +284,7 @@ function StepCard({
           disabled={!clickable || state === "active"}
           aria-expanded={state === "active"}
           className={cn(
-            "flex min-h-11 items-center gap-2 text-left sm:min-h-0",
+            "flex min-h-11 items-center gap-2 text-left lg:min-h-0",
             clickable && state !== "active"
               ? "cursor-pointer"
               : "cursor-default",

@@ -110,6 +110,7 @@ function MobileNavigation() {
         title="Sections"
         description="Choose a console area."
         className="lg:hidden"
+        closeClassName="h-11 w-11 p-0"
       >
         <nav aria-label="Admin sections">
           <ul className="flex flex-col gap-1">
