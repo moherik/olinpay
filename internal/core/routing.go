@@ -36,6 +36,7 @@ type RouteRequest struct {
 // routing metadata that came from the merchant's configuration.
 type Candidate struct {
 	Provider provider.Provider
+	Name     string
 	Priority int
 	Weight   int
 	Position int
@@ -279,7 +280,7 @@ func (r *Router) candidatesOf(names []string, req *RouteRequest) []Candidate {
 		if !caps.SupportsMethod(req.Method) || !caps.SupportsChannel(req.Channel) {
 			continue
 		}
-		out = append(out, Candidate{Provider: p, Priority: len(out), Position: len(out)})
+		out = append(out, Candidate{Provider: p, Name: name, Priority: len(out), Position: len(out)})
 	}
 	return out
 }
@@ -364,7 +365,7 @@ func (r *Router) OrderForProvider(name string, req *RouteRequest) ([]Candidate, 
 	if !caps.SupportsChannel(req.Channel) {
 		return nil, fmt.Errorf("%w: provider %q does not support channel %s", domain.ErrNoRoute, name, req.Channel)
 	}
-	return []Candidate{{Provider: p, Priority: 0, Position: 0}}, nil
+	return []Candidate{{Provider: p, Name: resolved, Priority: 0, Position: 0}}, nil
 }
 
 func (r *Router) strategy(name string) Strategy {
@@ -400,7 +401,7 @@ func (r *Router) candidates(merchant *domain.Merchant, req *RouteRequest) []Cand
 			if !eligible(p) {
 				continue
 			}
-			out = append(out, Candidate{Provider: p, Position: len(out)})
+			out = append(out, Candidate{Provider: p, Name: name, Position: len(out)})
 		}
 		return out
 	}
@@ -419,6 +420,7 @@ func (r *Router) candidates(merchant *domain.Merchant, req *RouteRequest) []Cand
 		}
 		out = append(out, Candidate{
 			Provider: p,
+			Name:     rp.Name,
 			Priority: rp.Priority,
 			Weight:   rp.Weight,
 			Position: i,

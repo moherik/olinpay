@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/moherik/openpay.id/internal/domain"
@@ -226,7 +227,15 @@ func (e *Engine) CreatePayment(ctx context.Context, cmd CreatePaymentCommand) (*
 		Metadata:    effectiveMetadata,
 	}
 
-	ctx = provider.WithTraceContext(ctx, provider.TraceContext{MerchantID: merchant.ID, Environment: cmd.Environment, ReferenceID: cmd.ReferenceID})
+	transactionID := e.newID()
+	ctx = provider.WithTraceContext(ctx, provider.TraceContext{MerchantID: merchant.ID, Environment: cmd.Environment, ReferenceID: cmd.ReferenceID, TransactionID: transactionID})
+	var traceMu sync.Mutex
+	var traces []provider.HTTPTrace
+	ctx = provider.WithHTTPActivityRecorder(ctx, func(_ context.Context, trace provider.HTTPTrace) {
+		traceMu.Lock()
+		traces = append(traces, trace)
+		traceMu.Unlock()
+	})
 	resp, chosen, err := e.attemptCreate(ctx, candidates, provReq)
 	if err != nil {
 		// A routing-level custom response answers instead of the provider
@@ -242,7 +251,9 @@ func (e *Engine) CreatePayment(ctx context.Context, cmd CreatePaymentCommand) (*
 		return nil, err
 	}
 
-	tx := e.buildTransaction(merchant, cmd, chosen.Name(), resp, effectiveMetadata, effectiveDescription)
+	providerName := chosen.Provider.Name()
+	tx := e.buildTransaction(merchant, cmd, providerName, resp, effectiveMetadata, effectiveDescription)
+	tx.ID = transactionID
 	if err := e.txRepo.Create(ctx, tx); err != nil {
 		// A concurrent request may have won the idempotency race.
 		if errors.Is(err, domain.ErrConflict) {
@@ -251,6 +262,14 @@ func (e *Engine) CreatePayment(ctx context.Context, cmd CreatePaymentCommand) (*
 			}
 		}
 		return nil, err
+	}
+	if recorder := provider.CurrentHTTPActivityRecorder(); recorder != nil {
+		traceMu.Lock()
+		captured := append([]provider.HTTPTrace(nil), traces...)
+		traceMu.Unlock()
+		for _, trace := range captured {
+			recorder(ctx, trace)
+		}
 	}
 
 	e.log.Info("payment created",
@@ -268,19 +287,26 @@ func (e *Engine) CreatePayment(ctx context.Context, cmd CreatePaymentCommand) (*
 	return tx, nil
 }
 
-func (e *Engine) attemptCreate(ctx context.Context, candidates []Candidate, req *provider.CreatePaymentRequest) (*provider.CreatePaymentResponse, provider.Provider, error) {
+func (e *Engine) attemptCreate(ctx context.Context, candidates []Candidate, req *provider.CreatePaymentRequest) (*provider.CreatePaymentResponse, Candidate, error) {
 	var failures []error
 	for _, cand := range candidates {
 		resp, err := cand.Provider.CreatePayment(ctx, req)
 		if err != nil {
 			e.log.Warn("provider create failed, trying next",
-				"provider", cand.Provider.Name(), "reference_id", req.ReferenceID, "error", err.Error())
+				"provider", candidateName(cand), "reference_id", req.ReferenceID, "error", err.Error())
 			failures = append(failures, err)
 			continue
 		}
-		return resp, cand.Provider, nil
+		return resp, cand, nil
 	}
-	return nil, nil, fmt.Errorf("core: every provider failed for reference %s: %w", req.ReferenceID, errors.Join(failures...))
+	return nil, Candidate{}, fmt.Errorf("core: every provider failed for reference %s: %w", req.ReferenceID, errors.Join(failures...))
+}
+
+func candidateName(candidate Candidate) string {
+	if candidate.Name != "" {
+		return candidate.Name
+	}
+	return candidate.Provider.Name()
 }
 
 func (e *Engine) buildTransaction(merchant *domain.Merchant, cmd CreatePaymentCommand, providerName string, resp *provider.CreatePaymentResponse, metadata map[string]string, description string) *domain.Transaction {
@@ -407,7 +433,7 @@ func (e *Engine) Cancel(ctx context.Context, cmd CancelCommand) (*domain.Transac
 //
 // It is idempotent: duplicate or out-of-order callbacks that would not change
 // the transaction are accepted and ignored.
-func (e *Engine) HandleProviderEvent(ctx context.Context, providerName string, evt *provider.WebhookEvent) (*domain.Transaction, error) {
+func (e *Engine) HandleProviderEvent(ctx context.Context, providerName, environment string, evt *provider.WebhookEvent) (*domain.Transaction, error) {
 	if evt == nil || !evt.Correlatable() {
 		return nil, domain.Invalid("webhook", "event carries no reference")
 	}
@@ -415,7 +441,7 @@ func (e *Engine) HandleProviderEvent(ctx context.Context, providerName string, e
 		return nil, domain.Invalid("webhook", fmt.Sprintf("unknown status %q", evt.Status))
 	}
 
-	tx, err := e.correlate(ctx, providerName, evt)
+	tx, err := e.correlate(ctx, providerName, environment, evt)
 	if err != nil {
 		return nil, err
 	}
@@ -439,9 +465,9 @@ func (e *Engine) HandleProviderEvent(ctx context.Context, providerName string, e
 	return tx, nil
 }
 
-func (e *Engine) correlate(ctx context.Context, providerName string, evt *provider.WebhookEvent) (*domain.Transaction, error) {
+func (e *Engine) correlate(ctx context.Context, providerName, environment string, evt *provider.WebhookEvent) (*domain.Transaction, error) {
 	if evt.ProviderReference != "" {
-		tx, err := e.txRepo.GetByProviderReference(ctx, providerName, evt.ProviderReference)
+		tx, err := e.txRepo.GetByProviderReference(ctx, providerName, evt.ProviderReference, environment)
 		if err == nil {
 			return tx, nil
 		}
@@ -450,7 +476,7 @@ func (e *Engine) correlate(ctx context.Context, providerName string, evt *provid
 		}
 	}
 	if evt.ReferenceID != "" {
-		tx, err := e.txRepo.GetByProviderAndReference(ctx, providerName, evt.ReferenceID)
+		tx, err := e.txRepo.GetByProviderAndReference(ctx, providerName, evt.ReferenceID, environment)
 		if err == nil {
 			return tx, nil
 		}

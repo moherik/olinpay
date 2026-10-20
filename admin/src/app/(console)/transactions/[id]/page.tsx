@@ -30,7 +30,7 @@ import {
   type RawTransaction,
 } from "@/lib/api";
 import { formatDateTime, formatIDR } from "@/lib/format";
-import { activityBody, activityLabel, activityOrder, activityOutcome, activityTone } from "@/lib/transaction-activity";
+import { activityBody, activityLabel, activityOutcome, activityTone } from "@/lib/transaction-activity";
 
 export default function TransactionDetailPage() {
   return (
@@ -82,8 +82,7 @@ function TransactionDetailInner() {
           );
           setActivities(
             [...rows].sort((a, b) => {
-              const rank = activityOrder(b.direction, b.phase) - activityOrder(a.direction, a.phase);
-              return rank || Date.parse(b.created_at) - Date.parse(a.created_at);
+              return Date.parse(a.created_at) - Date.parse(b.created_at) || a.id.localeCompare(b.id);
             }),
           );
           setActivityError(null);
@@ -386,7 +385,7 @@ function ActivityPanel({
                     </span>
                     <span className="min-w-0">
                       <span className="block text-[13px] font-medium text-ink">
-                        {activityLabel(item.direction, item.phase, item.method, item.url)}
+                        {activityLabel(item.direction, item.phase, item.method, item.url, item.provider)}
                       </span>
                       <span className="block truncate text-[12px] text-secondary">
                         {item.phase || "Activity recorded"}

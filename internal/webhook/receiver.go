@@ -4,7 +4,8 @@
 //
 // Inbound flow (gateway -> openpay.id):
 //
-//	gateway -> POST /webhooks/{provider} -> Receiver
+//	gateway -> POST /webhooks/{provider} (production) or
+//	           /webhooks/sandbox/{provider} -> Receiver
 //	        -> provider.VerifyWebhookSignature (optional)
 //	        -> provider.ParseWebhook
 //	        -> core.Engine.HandleProviderEvent
@@ -23,6 +24,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -52,10 +54,6 @@ type Receiver struct {
 	log        *slog.Logger
 	now        func() time.Time
 	newID      func() string
-	// envFor reports the environment a provider instance is known to serve, so
-	// callbacks that fail to correlate still land under a sensible
-	// environment. Empty means unknown, which every console filter shows.
-	envFor func(providerName string) string
 }
 
 func (r *Receiver) SetActivityRepository(repo repository.TransactionActivityRepository) {
@@ -78,18 +76,13 @@ func NewReceiver(registry *provider.Registry, engine *core.Engine, events reposi
 	}
 }
 
-// SetEnvironmentResolver reports which environment each provider instance
-// serves. Called once at startup and again when the admin console hot-reloads
-// provider credentials.
-func (r *Receiver) SetEnvironmentResolver(fn func(providerName string) string) {
-	r.envFor = fn
-}
-
 // Mount registers the callback route on a chi router.
 //
 // A single path serves every gateway; the provider is identified by the final
 // path segment, e.g. POST /webhooks/mock.
 func (r *Receiver) Mount(router chi.Router) {
+	router.Post("/webhooks/sandbox/{provider}", r.HandleSandbox)
+	router.Post("/webhooks/sandbox/{provider}/*", r.HandleSandbox)
 	router.Post("/webhooks/{provider}", r.Handle)
 	// Winpay and other SNAP gateways may append a product-specific callback
 	// path to the provider callback base URL. Keep the provider in the first
@@ -99,12 +92,21 @@ func (r *Receiver) Mount(router chi.Router) {
 
 // Handle processes one inbound gateway callback.
 func (r *Receiver) Handle(w http.ResponseWriter, req *http.Request) {
-	name := chi.URLParam(req, "provider")
+	r.handle(w, req, domain.EnvironmentProduction)
+}
+
+// HandleSandbox processes a callback addressed to a sandbox provider instance.
+func (r *Receiver) HandleSandbox(w http.ResponseWriter, req *http.Request) {
+	r.handle(w, req, domain.EnvironmentSandbox)
+}
+
+func (r *Receiver) handle(w http.ResponseWriter, req *http.Request, environment string) {
+	requestedName := chi.URLParam(req, "provider")
+	name, p, ok := r.resolveProvider(requestedName, environment)
 	startedAt := time.Now()
-	p, ok := r.registry.Get(name)
 	if !ok {
 		httpx.WriteError(w, http.StatusNotFound, "provider_not_found",
-			"no provider is registered under "+name, "")
+			fmt.Sprintf("no provider instance is registered for %s callback under %s", environment, requestedName), "")
 		return
 	}
 
@@ -135,7 +137,7 @@ func (r *Receiver) Handle(w http.ResponseWriter, req *http.Request) {
 				"provider", name, "remote_addr", remoteAddr, "error", err.Error())
 			r.record(domain.InboundEvent{
 				Provider:       name,
-				Environment:    r.resolveEnv(name),
+				Environment:    environment,
 				SignatureValid: false,
 				Note:           "signature verification failed: " + truncate(err.Error(), 500),
 				RemoteAddr:     remoteAddr,
@@ -151,7 +153,7 @@ func (r *Receiver) Handle(w http.ResponseWriter, req *http.Request) {
 		r.log.Warn("cannot parse webhook", "provider", name, "error", err.Error())
 		r.record(domain.InboundEvent{
 			Provider:       name,
-			Environment:    r.resolveEnv(name),
+			Environment:    environment,
 			ReferenceID:    referenceFrom(evt),
 			SignatureValid: true,
 			Note:           "parse failed: " + truncate(err.Error(), 500),
@@ -162,8 +164,8 @@ func (r *Receiver) Handle(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Core engine: flag the transaction and notify the merchant.
-	tx, err := r.engine.HandleProviderEvent(req.Context(), name, evt)
-	env := r.resolveEnv(name)
+	tx, err := r.engine.HandleProviderEvent(req.Context(), name, environment, evt)
+	env := environment
 	if tx != nil {
 		env = tx.Environment
 	}
@@ -283,14 +285,22 @@ func (r *Receiver) record(e domain.InboundEvent) {
 	}
 }
 
-// resolveEnv returns the environment the provider instance serves; "" when
-// unknown (history rows without a correlated transaction keep the unknown
-// marker so the console still lists them).
-func (r *Receiver) resolveEnv(providerName string) string {
-	if r.envFor != nil {
-		return r.envFor(providerName)
+func (r *Receiver) resolveProvider(requestedName, environment string) (string, provider.Provider, bool) {
+	instanceName := domain.InstanceName(requestedName, environment)
+	if p, ok := r.registry.Get(instanceName); ok {
+		return p.Name(), p, true
 	}
-	return ""
+	// Provider IDs are adapter names, never environment-suffixed instance names.
+	if strings.Contains(requestedName, ".") {
+		return "", nil, false
+	}
+	// Unsuffixed providers are legacy environment-variable instances. They
+	// serve both callback paths when no database-backed instance exists.
+	p, ok := r.registry.Get(requestedName)
+	if ok {
+		return p.Name(), p, true
+	}
+	return requestedName, nil, false
 }
 
 // remoteIP strips the port from RemoteAddr for the audit trail.

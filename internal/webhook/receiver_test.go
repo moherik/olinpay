@@ -25,9 +25,10 @@ import (
 const gatewaySecret = "hook-secret"
 
 type fixture struct {
-	server *httptest.Server
-	engine *core.Engine
-	store  *memory.Store
+	server   *httptest.Server
+	engine   *core.Engine
+	store    *memory.Store
+	registry *provider.Registry
 }
 
 func setup(t *testing.T) *fixture {
@@ -79,13 +80,14 @@ func setupWithProvider(t *testing.T, p provider.Provider) *fixture {
 
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
-	return &fixture{server: srv, engine: engine, store: store}
+	return &fixture{server: srv, engine: engine, store: store, registry: registry}
 }
 
 func createPayment(t *testing.T, f *fixture) *domain.Transaction {
 	t.Helper()
 	tx, err := f.engine.CreatePayment(context.Background(), core.CreatePaymentCommand{
 		MerchantID:  "AW9X2K4T7Z",
+		Environment: domain.EnvironmentProduction,
 		ReferenceID: "INV-WH-1",
 		Amount:      99000,
 		Method:      provider.MethodVirtualAccount,
@@ -170,6 +172,47 @@ func TestReceiverAcceptsProviderCallbackPathSuffix(t *testing.T) {
 	}
 }
 
+func TestReceiverSandboxPathSelectsSandboxProviderInstance(t *testing.T) {
+	f := setup(t)
+	const sandboxSecret = "sandbox-hook-secret"
+	if _, err := f.registry.BuildAs("mock.sandbox", mock.Name, provider.Config{"secret": sandboxSecret}); err != nil {
+		t.Fatalf("building sandbox provider: %v", err)
+	}
+	if _, err := f.registry.BuildAs("mock.production", mock.Name, provider.Config{"secret": "production-hook-secret"}); err != nil {
+		t.Fatalf("building production provider: %v", err)
+	}
+	merchant, err := f.store.Merchants().GetByID(context.Background(), "AW9X2K4T7Z")
+	if err != nil {
+		t.Fatalf("loading merchant: %v", err)
+	}
+	merchant.Routing.Providers = []domain.RoutingProvider{{Name: "mock.sandbox", Enabled: true}}
+	if err := f.store.Merchants().Update(context.Background(), merchant); err != nil {
+		t.Fatalf("updating merchant route: %v", err)
+	}
+	tx, err := f.engine.CreatePayment(context.Background(), core.CreatePaymentCommand{
+		MerchantID: "AW9X2K4T7Z", Environment: domain.EnvironmentSandbox,
+		ReferenceID: "INV-SANDBOX-HOOK", Amount: 10000,
+		Method: provider.MethodVirtualAccount, Channel: "MOCK_VA",
+	})
+	if err != nil {
+		t.Fatalf("CreatePayment: %v", err)
+	}
+	if tx.ProviderName != mock.Name {
+		t.Fatalf("transaction provider = %q, want %q", tx.ProviderName, mock.Name)
+	}
+	if tx.Environment != domain.EnvironmentSandbox {
+		t.Fatalf("transaction environment = %q, want sandbox", tx.Environment)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"reference_id": tx.ReferenceID, "provider_reference": tx.ProviderReference,
+		"status": "paid", "amount": tx.Amount,
+	})
+	resp, raw := post(t, f, "/webhooks/sandbox/mock/v1.0/transfer-va/payment", body, mock.Sign(sandboxSecret, body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("receiver status = %d, body = %s", resp.StatusCode, raw)
+	}
+}
+
 func TestReceiverRejectsBadSignature(t *testing.T) {
 	f := setup(t)
 	tx := createPayment(t, f)
@@ -190,6 +233,17 @@ func TestReceiverUnknownProvider(t *testing.T) {
 	resp, _ := post(t, f, "/webhooks/nope", []byte(`{}`), "")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestReceiverRejectsEnvironmentSuffixedProviderPath(t *testing.T) {
+	f := setup(t)
+	if _, err := f.registry.BuildAs("mock.sandbox", mock.Name, provider.Config{"secret": gatewaySecret}); err != nil {
+		t.Fatalf("building sandbox provider: %v", err)
+	}
+	resp, _ := post(t, f, "/webhooks/mock.sandbox", []byte(`{}`), "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404; use /webhooks/sandbox/mock", resp.StatusCode)
 	}
 }
 

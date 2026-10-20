@@ -39,12 +39,13 @@ type TransactionRepository interface {
 	GetByID(ctx context.Context, id string) (*domain.Transaction, error)
 	// GetByReference loads by the merchant-scoped reference identifier.
 	GetByReference(ctx context.Context, merchantID, referenceID string) (*domain.Transaction, error)
-	// GetByProviderReference loads by the gateway's transaction identifier.
-	GetByProviderReference(ctx context.Context, providerName, providerReference string) (*domain.Transaction, error)
-	// GetByProviderAndReference loads by gateway name + merchant reference. It
+	// GetByProviderReference loads by adapter name, gateway transaction identifier,
+	// and environment.
+	GetByProviderReference(ctx context.Context, providerName, providerReference, environment string) (*domain.Transaction, error)
+	// GetByProviderAndReference loads by adapter name + merchant reference + environment. It
 	// backs webhook correlation for gateways that echo the order id but not
 	// their own transaction id.
-	GetByProviderAndReference(ctx context.Context, providerName, referenceID string) (*domain.Transaction, error)
+	GetByProviderAndReference(ctx context.Context, providerName, referenceID, environment string) (*domain.Transaction, error)
 	// List returns transactions matching the filter, newest first.
 	List(ctx context.Context, filter TransactionFilter) ([]*domain.Transaction, error)
 }

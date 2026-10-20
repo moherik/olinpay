@@ -153,7 +153,8 @@ type RoutingCondition struct {
 
 // RoutingProvider is a single provider entry in a routing configuration.
 type RoutingProvider struct {
-	// Name matches [provider.Provider.Name].
+	// Name identifies the registered provider instance, which may include an
+	// environment suffix such as "winpay.sandbox".
 	Name string `json:"name"`
 	// Priority orders candidates: lower value wins. Ignored by round_robin.
 	Priority int `json:"priority"`

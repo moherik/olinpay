@@ -42,6 +42,7 @@ func (c *captureNotifier) snapshot() ([]string, []*domain.Transaction) {
 // harness bundles everything a test needs to drive the engine.
 type harness struct {
 	engine   *core.Engine
+	registry *provider.Registry
 	store    *memory.Store
 	notifier *captureNotifier
 	gateway  *mock.Provider
@@ -84,10 +85,71 @@ func newHarness(t *testing.T) *harness {
 			Notifier:     notifier,
 			Logger:       quiet,
 		}),
+		registry: registry,
 		store:    store,
 		notifier: notifier,
 		gateway:  gateway,
 		merchant: merchant,
+	}
+}
+
+func TestCreatePaymentPersistsAdapterNameAndEnvironment(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.registry.BuildAs("mock.sandbox", mock.Name, provider.Config{"secret": "test-secret"}); err != nil {
+		t.Fatalf("building sandbox provider instance: %v", err)
+	}
+	h.merchant.Routing.Providers = []domain.RoutingProvider{{Name: "mock.sandbox", Enabled: true}}
+	if err := h.store.Merchants().Update(context.Background(), h.merchant); err != nil {
+		t.Fatalf("updating merchant route: %v", err)
+	}
+
+	cmd := h.createCommand()
+	cmd.Environment = domain.EnvironmentSandbox
+	tx, err := h.engine.CreatePayment(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("CreatePayment: %v", err)
+	}
+	if tx.ProviderName != mock.Name {
+		t.Fatalf("provider = %q, want %q", tx.ProviderName, mock.Name)
+	}
+	if tx.Environment != domain.EnvironmentSandbox {
+		t.Fatalf("environment = %q, want sandbox", tx.Environment)
+	}
+}
+
+func TestWebhookCorrelationUsesProviderAndEnvironment(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.registry.BuildAs("mock.sandbox", mock.Name, provider.Config{"secret": "test-secret"}); err != nil {
+		t.Fatalf("building sandbox provider instance: %v", err)
+	}
+	h.merchant.Routing.Providers = []domain.RoutingProvider{{Name: "mock.sandbox", Enabled: true}}
+	if err := h.store.Merchants().Update(context.Background(), h.merchant); err != nil {
+		t.Fatalf("updating merchant route: %v", err)
+	}
+	cmd := h.createCommand()
+	cmd.Environment = domain.EnvironmentSandbox
+	tx, err := h.engine.CreatePayment(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("CreatePayment: %v", err)
+	}
+
+	if tx.ProviderName != mock.Name {
+		t.Fatalf("provider = %q, want %q", tx.ProviderName, mock.Name)
+	}
+	evt := &provider.WebhookEvent{
+		ReferenceID:       tx.ReferenceID,
+		ProviderReference: tx.ProviderReference,
+		Status:            provider.StatusPaid,
+	}
+	if _, err := h.engine.HandleProviderEvent(context.Background(), mock.Name, domain.EnvironmentProduction, evt); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("wrong-environment callback error = %v, want not found", err)
+	}
+	updated, err := h.engine.HandleProviderEvent(context.Background(), mock.Name, domain.EnvironmentSandbox, evt)
+	if err != nil {
+		t.Fatalf("HandleProviderEvent: %v", err)
+	}
+	if updated.ID != tx.ID || updated.Status != provider.StatusPaid {
+		t.Fatalf("updated transaction = (%s, %s), want (%s, paid)", updated.ID, updated.Status, tx.ID)
 	}
 }
 
@@ -179,7 +241,7 @@ func TestWebhookMarksTransactionPaid(t *testing.T) {
 		"paid_at":            time.Now().Format(time.RFC3339),
 	})
 
-	updated, err := h.engine.HandleProviderEvent(ctx, mock.Name, evt)
+	updated, err := h.engine.HandleProviderEvent(ctx, mock.Name, tx.Environment, evt)
 	if err != nil {
 		t.Fatalf("HandleProviderEvent: %v", err)
 	}
@@ -196,7 +258,7 @@ func TestWebhookMarksTransactionPaid(t *testing.T) {
 	}
 
 	// A duplicate callback must be accepted and must not notify twice.
-	if _, err := h.engine.HandleProviderEvent(ctx, mock.Name, evt); err != nil {
+	if _, err := h.engine.HandleProviderEvent(ctx, mock.Name, tx.Environment, evt); err != nil {
 		t.Fatalf("duplicate HandleProviderEvent: %v", err)
 	}
 	if events, _ := h.notifier.snapshot(); len(events) != 1 {
@@ -211,7 +273,7 @@ func TestWebhookForUnknownTransaction(t *testing.T) {
 		ProviderReference: "MOCK-NOPE",
 		Status:            provider.StatusPaid,
 	}
-	_, err := h.engine.HandleProviderEvent(context.Background(), mock.Name, evt)
+	_, err := h.engine.HandleProviderEvent(context.Background(), mock.Name, domain.EnvironmentProduction, evt)
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}

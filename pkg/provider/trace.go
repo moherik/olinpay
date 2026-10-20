@@ -29,6 +29,7 @@ type HTTPTrace struct {
 type HTTPActivityRecorder func(context.Context, HTTPTrace)
 
 type traceContextKey struct{}
+type httpActivityRecorderContextKey struct{}
 
 var (
 	traceRecorderMu sync.RWMutex
@@ -37,6 +38,17 @@ var (
 
 func WithTraceContext(ctx context.Context, trace TraceContext) context.Context {
 	return context.WithValue(ctx, traceContextKey{}, trace)
+}
+
+func WithHTTPActivityRecorder(ctx context.Context, recorder HTTPActivityRecorder) context.Context {
+	return context.WithValue(ctx, httpActivityRecorderContextKey{}, recorder)
+}
+
+func HTTPActivityRecorderFrom(ctx context.Context) HTTPActivityRecorder {
+	if recorder, ok := ctx.Value(httpActivityRecorderContextKey{}).(HTTPActivityRecorder); ok {
+		return recorder
+	}
+	return CurrentHTTPActivityRecorder()
 }
 
 func TraceContextFrom(ctx context.Context) (TraceContext, bool) {

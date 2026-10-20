@@ -46,12 +46,7 @@ func (r *TransactionActivityRepository) List(ctx context.Context, f repository.A
 	if f.TransactionID != "" {
 		args = append(args, f.TransactionID)
 		id := len(args)
-		if f.MerchantID != "" && f.ReferenceID != "" {
-			args = append(args, f.MerchantID, f.Environment, f.ReferenceID)
-			where = append(where, fmt.Sprintf("(transaction_id = $%d OR (transaction_id IS NULL AND merchant_id = $%d AND environment = $%d AND reference_id = $%d))", id, id+1, id+2, id+3))
-		} else {
-			where = append(where, fmt.Sprintf("transaction_id = $%d", id))
-		}
+		where = append(where, fmt.Sprintf("transaction_id = $%d", id))
 	} else {
 		if f.MerchantID != "" {
 			args = append(args, f.MerchantID)

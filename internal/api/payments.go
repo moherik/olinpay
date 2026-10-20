@@ -62,13 +62,13 @@ func (s *Server) createPayment(w http.ResponseWriter, r *http.Request) {
 		Metadata:     body.Metadata,
 	}
 	startedAt := time.Now()
-	s.recordMerchantActivity(r, domain.ActivityMerchantRequest, merchant.ID, cmd.Environment, body.ReferenceID, "", rawRequest, 0, startedAt)
 
 	tx, err := s.engine.CreatePayment(r.Context(), cmd)
 	if err != nil {
 		fail(w, r, err, "")
 		return
 	}
+	s.recordMerchantActivity(r, domain.ActivityMerchantRequest, merchant.ID, cmd.Environment, body.ReferenceID, tx.ID, rawRequest, 0, startedAt)
 	writeData(w, http.StatusCreated, tx, nil)
 	responseBody, _ := json.Marshal(map[string]any{"data": tx})
 	s.recordMerchantActivity(r, domain.ActivityMerchantResponse, tx.MerchantID, tx.Environment, tx.ReferenceID, tx.ID, responseBody, http.StatusCreated, time.Now())

@@ -439,7 +439,7 @@ func TestCancelTransaction(t *testing.T) {
 func TestCancelTerminalTransactionFails(t *testing.T) {
 	f := setup(t)
 	tx := f.seedTransaction(t, "CANCEL-2", domain.EnvironmentSandbox)
-	if _, err := f.engine.HandleProviderEvent(context.Background(), "mock", &provider.WebhookEvent{
+	if _, err := f.engine.HandleProviderEvent(context.Background(), "mock", tx.Environment, &provider.WebhookEvent{
 		ReferenceID: tx.ReferenceID,
 		Status:      provider.StatusPaid,
 		Amount:      150000,
@@ -1119,6 +1119,7 @@ func TestInboundReprocessAppliesCallback(t *testing.T) {
 	event := &domain.InboundEvent{
 		ID:             id.NewPrefixed("inb"),
 		Provider:       "mock",
+		Environment:    tx.Environment,
 		EventType:      "payment.paid",
 		ReferenceID:    tx.ReferenceID,
 		Amount:         tx.Amount,

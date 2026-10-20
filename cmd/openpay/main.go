@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -121,12 +122,21 @@ func serve() error {
 	apiKeysRepo := postgres.NewAPIKeyRepository(pool)
 	inboundRepo := postgres.NewInboundEventRepository(pool)
 	activityRepo := postgres.NewTransactionActivityRepository(pool)
+	var activityClockMu sync.Mutex
+	var lastActivityAt time.Time
 	provider.SetHTTPActivityRecorder(func(ctx context.Context, trace provider.HTTPTrace) {
 		tc, ok := provider.TraceContextFrom(ctx)
 		if !ok || tc.MerchantID == "" || tc.ReferenceID == "" {
 			return
 		}
+		activityClockMu.Lock()
 		now := time.Now()
+		if !now.After(lastActivityAt) {
+			now = lastActivityAt.Add(time.Nanosecond)
+		}
+		responseAt := now.Add(time.Nanosecond)
+		lastActivityAt = responseAt
+		activityClockMu.Unlock()
 		request := &domain.TransactionActivity{
 			ID: id.NewPrefixed("act"), TransactionID: tc.TransactionID, MerchantID: tc.MerchantID,
 			Environment: tc.Environment, ReferenceID: tc.ReferenceID, Direction: domain.ActivityProviderRequest,
@@ -139,7 +149,7 @@ func serve() error {
 			Environment: tc.Environment, ReferenceID: tc.ReferenceID, Direction: domain.ActivityProviderResponse,
 			Phase: domain.ActivityResponse, Provider: trace.Provider, Method: trace.Method, URL: trace.URL,
 			Headers: map[string][]string(trace.ResponseHeaders), Body: trace.ResponseBody,
-			StatusCode: trace.StatusCode, DurationMs: trace.DurationMs, Error: trace.Error, CreatedAt: now,
+			StatusCode: trace.StatusCode, DurationMs: trace.DurationMs, Error: trace.Error, CreatedAt: responseAt,
 		}
 		_ = activityRepo.Create(context.Background(), response)
 	})
@@ -169,15 +179,13 @@ func serve() error {
 
 	receiver := webhook.NewReceiver(registry, engine, inboundRepo, log)
 	receiver.SetActivityRepository(activityRepo)
-	receiver.SetEnvironmentResolver(providerEnvironments(providerCfgRepo, registry))
 
 	// Provider hot reload: the admin console saves credentials, this callback
-	// rebuilds the live instance and refreshes the receiver's environment map.
+	// rebuilds the live environment-scoped instance.
 	reloadProvider := func(adapter, env string) error {
 		if err := applyProviderConfig(providerCfgRepo, registry, adapter, env); err != nil {
 			return err
 		}
-		receiver.SetEnvironmentResolver(providerEnvironments(providerCfgRepo, registry))
 		return nil
 	}
 
@@ -340,26 +348,6 @@ func applyProviderConfig(repo repository.ProviderConfigRepository, registry *pro
 		return fmt.Errorf("building %q (%s): %w", adapter, env, err)
 	}
 	return nil
-}
-
-// providerEnvironments resolves the environment each provider instance aims
-// at, for tagging inbound callbacks that fail to correlate with a
-// transaction. Registry-built (env-var) instances resolve to "" — unknown —
-// which the console always lists.
-func providerEnvironments(repo repository.ProviderConfigRepository, registry *provider.Registry) func(string) string {
-	envByInstance := map[string]string{}
-	for _, row := range fetchProviderConfigs(repo) {
-		envByInstance[domain.InstanceName(row.Provider, row.Environment)] = row.Environment
-	}
-	return func(instance string) string { return envByInstance[instance] }
-}
-
-func fetchProviderConfigs(repo repository.ProviderConfigRepository) []*domain.ProviderConfig {
-	rows, err := repo.List(context.Background())
-	if err != nil {
-		return nil
-	}
-	return rows
 }
 
 // featureFlags reports which console capabilities this build honestly backs.

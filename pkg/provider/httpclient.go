@@ -80,7 +80,7 @@ type loggingTransport struct {
 // RoundTrip implements [http.RoundTripper].
 func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	logger := HTTPLogger()
-	recorder := CurrentHTTPActivityRecorder()
+	recorder := HTTPActivityRecorderFrom(req.Context())
 	if (logger == nil && recorder == nil) || t.base == nil {
 		base := t.base
 		if base == nil {
@@ -111,7 +111,7 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if err != nil {
 		if recorder != nil {
 			trace := HTTPTrace{Provider: t.provider, Method: req.Method, URL: req.URL.String(), RequestHeaders: redactHeader(req.Header), RequestBody: redactBodyForTrace(req), DurationMs: elapsed, Error: err.Error()}
-			go recorder(context.WithoutCancel(ctx), trace)
+			recorder(context.WithoutCancel(ctx), trace)
 		}
 		if logger != nil {
 			logger.WarnContext(ctx, "provider api call failed",
@@ -135,7 +135,7 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if body, ok := peekResponseBody(resp); ok {
 			trace.ResponseBody = redactJSON(body)
 		}
-		go recorder(context.WithoutCancel(ctx), trace)
+		recorder(context.WithoutCancel(ctx), trace)
 	}
 
 	if logger != nil {

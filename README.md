@@ -423,8 +423,9 @@ credentials are stored in the database and hot-reload without a restart. The
 `OPENPAY_PROVIDER_WINPAY_*` environment variables carry the same keys for a
 bare deployment.
 
-Point Winpay's callback base URL at `/webhooks/winpay`. The webhook engine also
-accepts the product-specific suffixes Winpay appends, including
+Point Winpay's production callback base URL at `/webhooks/winpay` and its
+sandbox callback base URL at `/webhooks/sandbox/winpay`. The webhook engine
+also accepts the product-specific suffixes Winpay appends, including
 `/v1.0/transfer-va/payment` for Virtual Account and Modern Retail callbacks,
 `/v1.0/qr/qr-mpm-notify` for QRIS, and `/v1.0/debit/notify` for eWallets.
 The full received path is retained for SNAP signature verification. Leave
@@ -732,6 +733,10 @@ environment: DB-saved provider instances are registered as
 `<adapter>.<environment>` (e.g. `winpay.sandbox`) and never serve the other
 environment; environment-variable configured instances keep their bare adapter
 name (e.g. `mock`) and serve both.
+
+Transactions store the adapter name (e.g. `winpay`) in `provider_name` and keep
+the selected environment in the separate `environment` field. Webhook matching
+uses both fields.
 
 The optional `"provider"` field in a create-payment request also accepts the
 bare adapter name: the engine resolves it to the instance registered for the

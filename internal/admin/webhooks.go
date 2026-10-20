@@ -127,7 +127,7 @@ func (s *Server) reprocessInbound(w http.ResponseWriter, r *http.Request) {
 		EventType:         e.EventType,
 	}
 
-	tx, err := s.engine.HandleProviderEvent(r.Context(), e.Provider, evt)
+	tx, err := s.engine.HandleProviderEvent(r.Context(), e.Provider, e.Environment, evt)
 	if err != nil {
 		s.writeEngineError(w, err, "reprocessing failed")
 		return

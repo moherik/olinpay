@@ -135,11 +135,11 @@ func (r *txRepo) GetByReference(_ context.Context, merchantID, referenceID strin
 	return nil, domain.ErrNotFound
 }
 
-func (r *txRepo) GetByProviderReference(_ context.Context, providerName, providerReference string) (*domain.Transaction, error) {
+func (r *txRepo) GetByProviderReference(_ context.Context, providerName, providerReference, environment string) (*domain.Transaction, error) {
 	r.store.mu.RLock()
 	defer r.store.mu.RUnlock()
 	for _, tx := range r.store.transactions {
-		if tx.ProviderName == providerName && tx.ProviderReference == providerReference {
+		if tx.ProviderName == providerName && tx.ProviderReference == providerReference && tx.Environment == environment {
 			clone := *tx
 			return &clone, nil
 		}
@@ -147,11 +147,11 @@ func (r *txRepo) GetByProviderReference(_ context.Context, providerName, provide
 	return nil, domain.ErrNotFound
 }
 
-func (r *txRepo) GetByProviderAndReference(_ context.Context, providerName, referenceID string) (*domain.Transaction, error) {
+func (r *txRepo) GetByProviderAndReference(_ context.Context, providerName, referenceID, environment string) (*domain.Transaction, error) {
 	r.store.mu.RLock()
 	defer r.store.mu.RUnlock()
 	for _, tx := range r.store.transactions {
-		if tx.ProviderName == providerName && tx.ReferenceID == referenceID {
+		if tx.ProviderName == providerName && tx.ReferenceID == referenceID && tx.Environment == environment {
 			clone := *tx
 			return &clone, nil
 		}

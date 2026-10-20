@@ -379,8 +379,9 @@ paths:
       operationId: receiveProviderWebhook
       summary: Receive a payment-provider callback
       description: |
-        Gateway-facing endpoint. No merchant API key is required. The selected
-        adapter validates its own signature (when configured) and parses a
+        Production gateway endpoint. Use `/webhooks/sandbox/{provider}` for
+        sandbox callbacks. No merchant API key is required. The selected
+        environment-specific adapter validates its own signature (when configured) and parses a
         provider-specific callback body. Exact request fields, signature
         headers, and success acknowledgement vary by provider. For Winpay, use
         its SNAP callback format and configure the Winpay public key in
@@ -390,7 +391,7 @@ paths:
         - name: provider
           in: path
           required: true
-          description: Registered provider name, for example `winpay` or `mock`.
+          description: Adapter name without an environment suffix, for example `winpay` or `mock`.
           schema: { type: string, pattern: '^[a-z0-9-]+$' }
         - name: X-SIGNATURE
           in: header
@@ -464,6 +465,8 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '500':
           $ref: '#/components/responses/InternalError'
+  /webhooks/sandbox/{provider}:
+    $ref: '#/paths/~1webhooks~1{provider}'
 components:
   securitySchemes:
     ApiKeyAuth:

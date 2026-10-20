@@ -11,6 +11,9 @@ test("activity labels cover the four transaction boundaries", () => {
   ]).then(([helpers, page]) => {
     assert.match(page, /Activity/);
     ["provider_request", "provider_webhook", "merchant_webhook"].forEach((needle) => assert.match(helpers, new RegExp(needle)));
+    assert.match(helpers, /Provider Response · \$\{provider\}/);
+    assert.match(helpers, /\$\{provider \|\| "Provider"\}/);
+    assert.match(page, /Date\.parse\(a\.created_at\) - Date\.parse\(b\.created_at\)/);
   });
 });
 

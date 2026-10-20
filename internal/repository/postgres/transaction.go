@@ -113,19 +113,19 @@ func (r *TransactionRepository) GetByReference(ctx context.Context, merchantID, 
 }
 
 // GetByProviderReference implements repository.TransactionRepository.
-func (r *TransactionRepository) GetByProviderReference(ctx context.Context, providerName, providerReference string) (*domain.Transaction, error) {
+func (r *TransactionRepository) GetByProviderReference(ctx context.Context, providerName, providerReference, environment string) (*domain.Transaction, error) {
 	const q = `SELECT ` + transactionColumns + `
-		FROM transactions WHERE provider_name = $1 AND provider_reference = $2
+		FROM transactions WHERE provider_name = $1 AND provider_reference = $2 AND environment = $3
 		ORDER BY created_at DESC LIMIT 1`
-	return r.queryOne(ctx, q, providerName, providerReference)
+	return r.queryOne(ctx, q, providerName, providerReference, environment)
 }
 
 // GetByProviderAndReference implements repository.TransactionRepository.
-func (r *TransactionRepository) GetByProviderAndReference(ctx context.Context, providerName, referenceID string) (*domain.Transaction, error) {
+func (r *TransactionRepository) GetByProviderAndReference(ctx context.Context, providerName, referenceID, environment string) (*domain.Transaction, error) {
 	const q = `SELECT ` + transactionColumns + `
-		FROM transactions WHERE provider_name = $1 AND reference_id = $2
+		FROM transactions WHERE provider_name = $1 AND reference_id = $2 AND environment = $3
 		ORDER BY created_at DESC LIMIT 1`
-	return r.queryOne(ctx, q, providerName, referenceID)
+	return r.queryOne(ctx, q, providerName, referenceID, environment)
 }
 
 func (r *TransactionRepository) queryOne(ctx context.Context, q string, args ...any) (*domain.Transaction, error) {

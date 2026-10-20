@@ -1,26 +1,15 @@
 export type ActivityTone = "neutral" | "ok" | "warn" | "danger";
 
-export function activityOrder(direction: string, phase: string): number {
-  const ranks: Record<string, number> = {
-    "merchant_request:request": 0,
-    "provider_request:request": 1,
-    "provider_response:response": 2,
-    "merchant_response:response": 3,
-    "provider_webhook:request": 4,
-    "provider_webhook:response": 5,
-    "merchant_webhook:request": 6,
-    "merchant_webhook:response": 7,
-  };
-  return ranks[`${direction}:${phase}`] ?? 4;
-}
-
-export function activityLabel(direction: string, phase: string, method?: string, url?: string): string {
+export function activityLabel(direction: string, phase: string, method?: string, url?: string, provider?: string): string {
+  if (direction === "provider_request" && phase === "request" && url) {
+    return `${provider || "Provider"} ${method || "Request"} ${url}`;
+  }
   if (phase === "request" && url) return `${method || "Request"} ${url}`;
   const labels: Record<string, string> = {
     "merchant_request:request": "Merchant Request",
     "merchant_response:response": "AwsemPay Response",
     "provider_request:request": "Provider Request",
-    "provider_response:response": "Provider Response",
+    "provider_response:response": provider ? `Provider Response · ${provider}` : "Provider Response",
     "provider_webhook:request": "Incoming request",
     "provider_webhook:response": "AwsemPay Acknowledgement",
     "merchant_webhook:request": "Merchant Webhook",
