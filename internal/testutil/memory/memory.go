@@ -101,6 +101,7 @@ func (r *txRepo) Create(_ context.Context, tx *domain.Transaction) error {
 		}
 	}
 	clone := *tx
+	clone.ProviderData = cloneStringMap(tx.ProviderData)
 	r.store.transactions[tx.ID] = &clone
 	return nil
 }
@@ -113,6 +114,7 @@ func (r *txRepo) Update(_ context.Context, tx *domain.Transaction) error {
 		return domain.ErrNotFound
 	}
 	clone := *tx
+	clone.ProviderData = cloneStringMap(tx.ProviderData)
 	r.store.transactions[tx.ID] = &clone
 	_ = existing
 	return nil
@@ -126,6 +128,7 @@ func (r *txRepo) GetByID(_ context.Context, id string) (*domain.Transaction, err
 		return nil, domain.ErrNotFound
 	}
 	clone := *tx
+	clone.ProviderData = cloneStringMap(tx.ProviderData)
 	return &clone, nil
 }
 
@@ -135,6 +138,7 @@ func (r *txRepo) GetByReference(_ context.Context, merchantID, referenceID strin
 	for _, tx := range r.store.transactions {
 		if tx.MerchantID == merchantID && tx.ReferenceID == referenceID {
 			clone := *tx
+			clone.ProviderData = cloneStringMap(tx.ProviderData)
 			return &clone, nil
 		}
 	}
@@ -147,6 +151,7 @@ func (r *txRepo) GetByProviderReference(_ context.Context, providerName, provide
 	for _, tx := range r.store.transactions {
 		if tx.ProviderName == providerName && tx.ProviderReference == providerReference && tx.Environment == environment {
 			clone := *tx
+			clone.ProviderData = cloneStringMap(tx.ProviderData)
 			return &clone, nil
 		}
 	}
@@ -195,6 +200,7 @@ func (r *txRepo) List(_ context.Context, f repository.TransactionFilter) ([]*dom
 			continue
 		}
 		clone := *tx
+		clone.ProviderData = cloneStringMap(tx.ProviderData)
 		out = append(out, &clone)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
@@ -221,6 +227,17 @@ func containsStatus(list []provider.Status, want provider.Status) bool {
 		}
 	}
 	return false
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
 }
 
 // --- merchants -------------------------------------------------------------

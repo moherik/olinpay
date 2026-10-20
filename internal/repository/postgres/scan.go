@@ -40,20 +40,21 @@ func decodeJSON(raw []byte, v any) error {
 
 const transactionColumns = `id, merchant_id, environment, reference_id, provider_name, provider_reference,
 	method, channel, amount, currency, status, payment_code, actions, customer, items,
-	description, metadata, failure_reason, expires_at, paid_at, created_at, updated_at`
+	description, metadata, provider_data, failure_reason, expires_at, paid_at, created_at, updated_at`
 
 func scanTransaction(s scannable) (*domain.Transaction, error) {
 	var (
-		tx       domain.Transaction
-		actions  []byte
-		customer []byte
-		items    []byte
-		metadata []byte
+		tx           domain.Transaction
+		actions      []byte
+		customer     []byte
+		items        []byte
+		metadata     []byte
+		providerData []byte
 	)
 	err := s.Scan(
 		&tx.ID, &tx.MerchantID, &tx.Environment, &tx.ReferenceID, &tx.ProviderName, &tx.ProviderReference,
 		&tx.Method, &tx.Channel, &tx.Amount, &tx.Currency, &tx.Status, &tx.PaymentCode,
-		&actions, &customer, &items, &tx.Description, &metadata, &tx.FailureReason,
+		&actions, &customer, &items, &tx.Description, &metadata, &providerData, &tx.FailureReason,
 		&tx.ExpiresAt, &tx.PaidAt, &tx.CreatedAt, &tx.UpdatedAt,
 	)
 	if err != nil {
@@ -69,6 +70,9 @@ func scanTransaction(s scannable) (*domain.Transaction, error) {
 		return nil, err
 	}
 	if err := decodeJSON(metadata, &tx.Metadata); err != nil {
+		return nil, err
+	}
+	if err := decodeJSON(providerData, &tx.ProviderData); err != nil {
 		return nil, err
 	}
 	return &tx, nil

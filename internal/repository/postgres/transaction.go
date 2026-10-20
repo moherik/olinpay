@@ -45,20 +45,24 @@ func (r *TransactionRepository) Create(ctx context.Context, tx *domain.Transacti
 	if err != nil {
 		return fmt.Errorf("postgres: encoding metadata: %w", err)
 	}
+	providerData, err := jsonBytes(tx.ProviderData)
+	if err != nil {
+		return fmt.Errorf("postgres: encoding provider data: %w", err)
+	}
 
 	const q = `
 		INSERT INTO transactions (
 			id, merchant_id, environment, reference_id, provider_name, provider_reference,
 			method, channel, amount, currency, status, payment_code, actions,
-			customer, items, description, metadata, failure_reason,
+			customer, items, description, metadata, provider_data, failure_reason,
 			expires_at, paid_at, created_at, updated_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
 		)`
 	_, err = r.pool.Exec(ctx, q,
 		tx.ID, tx.MerchantID, tx.Environment, tx.ReferenceID, tx.ProviderName, tx.ProviderReference,
 		tx.Method, tx.Channel, tx.Amount, tx.Currency, tx.Status, tx.PaymentCode, actions,
-		customer, items, tx.Description, metadata, tx.FailureReason,
+		customer, items, tx.Description, metadata, providerData, tx.FailureReason,
 		tx.ExpiresAt, tx.PaidAt, tx.CreatedAt, tx.UpdatedAt,
 	)
 	if err != nil {
@@ -76,19 +80,24 @@ func (r *TransactionRepository) Update(ctx context.Context, tx *domain.Transacti
 	if err != nil {
 		return fmt.Errorf("postgres: encoding actions: %w", err)
 	}
+	providerData, err := jsonBytes(tx.ProviderData)
+	if err != nil {
+		return fmt.Errorf("postgres: encoding provider data: %w", err)
+	}
 	const q = `
 		UPDATE transactions SET
 			provider_reference = $2,
-			status             = $3,
-			payment_code       = $4,
-			actions            = $5,
-			failure_reason     = $6,
-			expires_at         = $7,
-			paid_at            = $8,
-			updated_at         = $9
+			provider_data      = $3,
+			status             = $4,
+			payment_code       = $5,
+			actions            = $6,
+			failure_reason     = $7,
+			expires_at         = $8,
+			paid_at            = $9,
+			updated_at         = $10
 		WHERE id = $1`
 	tag, err := r.pool.Exec(ctx, q,
-		tx.ID, tx.ProviderReference, tx.Status, tx.PaymentCode, actions,
+		tx.ID, tx.ProviderReference, providerData, tx.Status, tx.PaymentCode, actions,
 		tx.FailureReason, tx.ExpiresAt, tx.PaidAt, tx.UpdatedAt,
 	)
 	if err != nil {

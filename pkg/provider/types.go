@@ -108,7 +108,8 @@ type CreatePaymentRequest struct {
 type CreatePaymentResponse struct {
 	// ProviderReference is the gateway's own transaction identifier. It is the
 	// key used later for Inquiry/Cancel and for correlating webhooks.
-	ProviderReference string `json:"provider_reference"`
+	ProviderReference string            `json:"provider_reference"`
+	ProviderData      map[string]string `json:"-"`
 	// ReferenceID echoes back the merchant reference from the request so the
 	// core engine can correlate even if the gateway mangles it.
 	ReferenceID string `json:"reference_id"`
@@ -133,7 +134,8 @@ type InquiryRequest struct {
 	// ReferenceID is the merchant reference used at creation time.
 	ReferenceID string `json:"reference_id"`
 	// ProviderReference is the gateway identifier, if known.
-	ProviderReference string `json:"provider_reference,omitempty"`
+	ProviderReference string            `json:"provider_reference,omitempty"`
+	ProviderData      map[string]string `json:"-"`
 }
 
 // InquiryResponse is the unified output for [Provider.Inquiry].
@@ -154,8 +156,9 @@ type InquiryResponse struct {
 // most gateways expose a single "void/cancel/expire" endpoint. The Reason field
 // lets the core engine communicate intent.
 type CancelRequest struct {
-	ReferenceID       string `json:"reference_id"`
-	ProviderReference string `json:"provider_reference,omitempty"`
+	ReferenceID       string            `json:"reference_id"`
+	ProviderReference string            `json:"provider_reference,omitempty"`
+	ProviderData      map[string]string `json:"-"`
 	// Reason is either "cancel" or "expire" by convention, or any gateway
 	// specific note. Providers may forward it when the gateway supports it.
 	Reason string `json:"reason,omitempty"`

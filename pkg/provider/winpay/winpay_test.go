@@ -566,9 +566,41 @@ func TestCancelVirtualAccount(t *testing.T) {
 		t.Errorf("status = %q, want cancelled", resp.Status)
 	}
 
-	sent := g.request(t, http.MethodDelete, pathDeleteVA)
+	sent := g.request(t, http.MethodPost, pathDeleteVA)
 	if sent["virtualAccountNo"] != "2269141693898987" {
 		t.Errorf("virtualAccountNo = %v", sent["virtualAccountNo"])
+	}
+}
+
+func TestCancelVirtualAccountAfterProviderRestart(t *testing.T) {
+	g := newTestGateway(t)
+	p1 := newTestProvider(t, g, nil)
+	g.on(pathCreateVA, `{
+		"responseCode": "2002700", "responseMessage": "Success",
+		"virtualAccountData": {"virtualAccountNo": "2269141693898987", "trxId": "INV-RESTART",
+		"totalAmount": {"value": "25000.00", "currency": "IDR"},
+		"additionalInfo": {"channel": "BCA", "contractId": "ci-restart"}}
+	}`)
+	created, err := p1.CreatePayment(context.Background(), &provider.CreatePaymentRequest{
+		ReferenceID: "INV-RESTART", Amount: 25000, Method: provider.MethodVirtualAccount, Channel: "BCA",
+	})
+	if err != nil {
+		t.Fatalf("CreatePayment: %v", err)
+	}
+	p2 := newTestProvider(t, g, nil)
+	g.on(pathDeleteVA, `{"responseCode":"2003100","responseMessage":"Success","virtualAccountData":{"trxId":"INV-RESTART"}}`)
+
+	_, err = p2.Cancel(context.Background(), &provider.CancelRequest{
+		ReferenceID: created.ReferenceID, ProviderReference: created.ProviderReference,
+		ProviderData: created.ProviderData, Reason: "cancel",
+	})
+	if err != nil {
+		t.Fatalf("Cancel after provider restart: %v", err)
+	}
+	sent := g.request(t, http.MethodPost, pathDeleteVA)
+	additional, ok := sent["additionalInfo"].(map[string]any)
+	if !ok || additional["contractId"] != "ci-restart" || additional["channel"] != "BCA" {
+		t.Fatalf("delete correlation = %#v", sent["additionalInfo"])
 	}
 }
 

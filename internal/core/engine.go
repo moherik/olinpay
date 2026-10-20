@@ -327,6 +327,17 @@ func candidateName(candidate Candidate) string {
 	return candidate.Provider.Name()
 }
 
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
+}
+
 func (e *Engine) buildTransaction(merchant *domain.Merchant, cmd CreatePaymentCommand, providerName string, resp *provider.CreatePaymentResponse, metadata map[string]string, description string) *domain.Transaction {
 	now := e.now()
 	tx := &domain.Transaction{
@@ -336,6 +347,7 @@ func (e *Engine) buildTransaction(merchant *domain.Merchant, cmd CreatePaymentCo
 		ReferenceID:       cmd.ReferenceID,
 		ProviderName:      providerName,
 		ProviderReference: resp.ProviderReference,
+		ProviderData:      cloneStringMap(resp.ProviderData),
 		Method:            cmd.Method,
 		Channel:           cmd.Channel,
 		Amount:            resp.Amount,
@@ -381,7 +393,7 @@ func (e *Engine) Inquiry(ctx context.Context, q InquiryQuery) (*domain.Transacti
 		return tx, nil
 	}
 
-	p, ok := e.registry.Get(tx.ProviderName)
+	p, ok := e.providerForTransaction(tx)
 	if !ok || !p.Capabilities().SupportsInquiry {
 		return tx, nil
 	}
@@ -390,6 +402,7 @@ func (e *Engine) Inquiry(ctx context.Context, q InquiryQuery) (*domain.Transacti
 	resp, err := p.Inquiry(ctx, &provider.InquiryRequest{
 		ReferenceID:       tx.ReferenceID,
 		ProviderReference: tx.ProviderReference,
+		ProviderData:      providerDataForTransaction(tx),
 	})
 	if err != nil {
 		return nil, err
@@ -412,7 +425,7 @@ func (e *Engine) Cancel(ctx context.Context, cmd CancelCommand) (*domain.Transac
 		return nil, fmt.Errorf("%w: transaction is already %s", domain.ErrUnprocessable, tx.Status)
 	}
 
-	p, ok := e.registry.Get(tx.ProviderName)
+	p, ok := e.providerForTransaction(tx)
 	if !ok {
 		return nil, fmt.Errorf("%w: provider %q is not available", domain.ErrNoRoute, tx.ProviderName)
 	}
@@ -428,6 +441,7 @@ func (e *Engine) Cancel(ctx context.Context, cmd CancelCommand) (*domain.Transac
 	resp, err := p.Cancel(ctx, &provider.CancelRequest{
 		ReferenceID:       tx.ReferenceID,
 		ProviderReference: tx.ProviderReference,
+		ProviderData:      providerDataForTransaction(tx),
 		Reason:            reason,
 	})
 	if err != nil {
@@ -442,6 +456,38 @@ func (e *Engine) Cancel(ctx context.Context, cmd CancelCommand) (*domain.Transac
 		return nil, err
 	}
 	return tx, nil
+}
+
+func (e *Engine) providerForTransaction(tx *domain.Transaction) (provider.Provider, bool) {
+	if tx.Environment != "" {
+		if p, ok := e.registry.Get(domain.InstanceName(tx.ProviderName, tx.Environment)); ok {
+			return p, true
+		}
+	}
+	return e.registry.Get(tx.ProviderName)
+}
+
+func providerDataForTransaction(tx *domain.Transaction) map[string]string {
+	data := cloneStringMap(tx.ProviderData)
+	if data == nil {
+		data = make(map[string]string)
+	}
+	if data["method"] == "" {
+		data["method"] = string(tx.Method)
+	}
+	if data["channel"] == "" {
+		data["channel"] = tx.Channel
+	}
+	if data["trx_id"] == "" {
+		data["trx_id"] = tx.ReferenceID
+	}
+	if data["payment_code"] == "" {
+		data["payment_code"] = tx.PaymentCode
+	}
+	if data["amount"] == "" && tx.Amount > 0 {
+		data["amount"] = fmt.Sprintf("%d", tx.Amount)
+	}
+	return data
 }
 
 // --- Inbound gateway events (webhooks) -------------------------------------

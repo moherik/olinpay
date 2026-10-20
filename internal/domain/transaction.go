@@ -20,6 +20,7 @@ type Transaction struct {
 	ReferenceID       string                   `json:"reference_id"`
 	ProviderName      string                   `json:"provider"`
 	ProviderReference string                   `json:"provider_reference,omitempty"`
+	ProviderData      map[string]string        `json:"-"`
 	Method            provider.Method          `json:"method"`
 	Channel           string                   `json:"channel,omitempty"`
 	Amount            provider.Amount          `json:"amount"`

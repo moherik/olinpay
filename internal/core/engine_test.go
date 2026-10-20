@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,38 @@ type captureNotifier struct {
 	mu     sync.Mutex
 	events []string
 	txs    []*domain.Transaction
+}
+
+type returnURLCaptureProvider struct {
+	provider.Provider
+	returnURL        string
+	successReturnURL string
+	failureReturnURL string
+}
+
+func (p *returnURLCaptureProvider) CreatePayment(ctx context.Context, req *provider.CreatePaymentRequest) (*provider.CreatePaymentResponse, error) {
+	p.returnURL = req.ReturnURL
+	p.successReturnURL = req.SuccessReturnURL
+	p.failureReturnURL = req.FailureReturnURL
+	return p.Provider.CreatePayment(ctx, req)
+}
+
+type providerDataGateway struct {
+	*mock.Provider
+	cancelData map[string]string
+}
+
+func (p *providerDataGateway) CreatePayment(ctx context.Context, req *provider.CreatePaymentRequest) (*provider.CreatePaymentResponse, error) {
+	resp, err := p.Provider.CreatePayment(ctx, req)
+	if err == nil {
+		resp.ProviderData = map[string]string{"contract_id": "contract-1", "channel": "BCA"}
+	}
+	return resp, err
+}
+
+func (p *providerDataGateway) Cancel(ctx context.Context, req *provider.CancelRequest) (*provider.CancelResponse, error) {
+	p.cancelData = req.ProviderData
+	return p.Provider.Cancel(ctx, req)
 }
 
 func (c *captureNotifier) Notify(_ context.Context, tx *domain.Transaction) error {
@@ -78,12 +111,13 @@ func newHarness(t *testing.T) *harness {
 
 	return &harness{
 		engine: core.New(core.Deps{
-			Registry:     registry,
-			Router:       core.NewRouter(registry),
-			Transactions: store.Transactions(),
-			Merchants:    store.Merchants(),
-			Notifier:     notifier,
-			Logger:       quiet,
+			Registry:         registry,
+			Router:           core.NewRouter(registry),
+			Transactions:     store.Transactions(),
+			Merchants:        store.Merchants(),
+			MerchantSettings: store.MerchantSettings(),
+			Notifier:         notifier,
+			Logger:           quiet,
 		}),
 		registry: registry,
 		store:    store,
@@ -114,6 +148,54 @@ func TestCreatePaymentPersistsAdapterNameAndEnvironment(t *testing.T) {
 	}
 	if tx.Environment != domain.EnvironmentSandbox {
 		t.Fatalf("environment = %q, want sandbox", tx.Environment)
+	}
+	h.registry.Remove(mock.Name)
+	cancelled, err := h.engine.Cancel(context.Background(), core.CancelCommand{TransactionID: tx.ID})
+	if err != nil {
+		t.Fatalf("Cancel through environment-scoped instance: %v", err)
+	}
+	if cancelled.Status != provider.StatusCancelled {
+		t.Fatalf("cancel status = %q, want cancelled", cancelled.Status)
+	}
+}
+
+func TestProviderDataPersistsAndReturnsToCancel(t *testing.T) {
+	h := newHarness(t)
+	dataGateway := &providerDataGateway{Provider: h.gateway}
+	h.registry.Remove(mock.Name)
+	h.registry.Add(dataGateway)
+
+	tx, err := h.engine.CreatePayment(context.Background(), h.createCommand())
+	if err != nil {
+		t.Fatalf("CreatePayment: %v", err)
+	}
+	stored, err := h.store.Transactions().GetByID(context.Background(), tx.ID)
+	if err != nil {
+		t.Fatalf("load persisted transaction: %v", err)
+	}
+	if got := stored.ProviderData["contract_id"]; got != "contract-1" {
+		t.Fatalf("persisted contract id = %q", got)
+	}
+	stored.ProviderData = nil
+	if err := h.store.Transactions().Update(context.Background(), stored); err != nil {
+		t.Fatalf("clear provider-specific data to simulate an older transaction: %v", err)
+	}
+	if _, err := h.engine.Cancel(context.Background(), core.CancelCommand{TransactionID: tx.ID}); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if got := dataGateway.cancelData["method"]; got != string(provider.MethodVirtualAccount) {
+		t.Fatalf("cancel method = %q", got)
+	}
+	if got := dataGateway.cancelData["channel"]; got != tx.Channel {
+		t.Fatalf("cancel channel = %q, want %q", got, tx.Channel)
+	}
+
+	encoded, err := json.Marshal(tx)
+	if err != nil {
+		t.Fatalf("marshal transaction: %v", err)
+	}
+	if strings.Contains(string(encoded), "contract-1") {
+		t.Fatalf("provider data leaked into transaction JSON: %s", encoded)
 	}
 }
 

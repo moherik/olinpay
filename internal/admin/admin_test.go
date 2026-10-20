@@ -396,6 +396,10 @@ func TestListTransactionsFiltersByEnvironment(t *testing.T) {
 func TestGetTransactionMetaReportsCapabilities(t *testing.T) {
 	f := setup(t)
 	tx := f.seedTransaction(t, "META-1", domain.EnvironmentSandbox)
+	if _, err := f.registry.BuildAs("mock.sandbox", "mock", provider.Config{}); err != nil {
+		t.Fatalf("building sandbox provider instance: %v", err)
+	}
+	f.registry.Remove("mock")
 
 	cookie := f.loginAs(t, "tech@console.test", "tech")
 	status, data := f.doWith(t, cookie, "GET", "/api/transactions/"+tx.ID, nil)

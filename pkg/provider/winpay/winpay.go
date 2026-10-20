@@ -46,9 +46,9 @@
 // Winpay addresses its status, inquiry and cancel endpoints by the contractId
 // (and, for Virtual Accounts, the VA number) it returned at creation time, plus
 // the channel. The unified [provider.InquiryRequest] carries none of those, so
-// the adapter keeps a short-lived in-process cache filled by CreatePayment. A
-// restart loses it; a production deployment would persist these identifiers
-// alongside the transaction.
+// the adapter returns the correlation details as private provider data for the
+// core to persist. Its short-lived in-process cache avoids rebuilding records
+// for recently created transactions but is not required for inquiry or cancel.
 package winpay
 
 import (
@@ -124,6 +124,14 @@ const (
 	// Cache retention for correlation records.
 	recordTTL  = 24 * time.Hour
 	pruneEvery = time.Minute
+)
+
+const (
+	providerDataChannel     = "channel"
+	providerDataMethod      = "method"
+	providerDataTrxID       = "trx_id"
+	providerDataPaymentCode = "payment_code"
+	providerDataAmount      = "amount"
 )
 
 // Operation names used in [provider.Error].
@@ -397,6 +405,7 @@ func (p *Provider) createVA(ctx context.Context, req *provider.CreatePaymentRequ
 	}
 	return &provider.CreatePaymentResponse{
 		ProviderReference: data.AdditionalInfo.ContractID,
+		ProviderData:      providerData(&record{providerRef: data.AdditionalInfo.ContractID, paymentCode: vaNo, channel: firstNonEmpty(data.AdditionalInfo.Channel, channel), method: req.Method, trxID: reference, amount: amount}),
 		ReferenceID:       reference,
 		Status:            provider.StatusPending,
 		Amount:            amount,
@@ -466,6 +475,7 @@ func (p *Provider) createQRIS(ctx context.Context, req *provider.CreatePaymentRe
 	}
 	return &provider.CreatePaymentResponse{
 		ProviderReference: out.AdditionalInfo.ContractID,
+		ProviderData:      providerData(&record{providerRef: out.AdditionalInfo.ContractID, channel: "QRIS", method: provider.MethodQRIS, trxID: reference, amount: req.Amount}),
 		ReferenceID:       reference,
 		Status:            provider.StatusPending,
 		Amount:            req.Amount,
@@ -546,6 +556,7 @@ func (p *Provider) createEWallet(ctx context.Context, req *provider.CreatePaymen
 	}
 	return &provider.CreatePaymentResponse{
 		ProviderReference: out.AdditionalInfo.ContractID,
+		ProviderData:      providerData(&record{providerRef: out.AdditionalInfo.ContractID, channel: channel, method: provider.MethodEWallet, trxID: reference, amount: req.Amount}),
 		ReferenceID:       reference,
 		Status:            provider.StatusPending,
 		Amount:            req.Amount,
@@ -569,8 +580,11 @@ func (p *Provider) Inquiry(ctx context.Context, req *provider.InquiryRequest) (*
 	}
 	rec := p.lookup(req.ReferenceID, req.ProviderReference)
 	if rec == nil {
+		rec = recordFromProviderData(req.ProviderReference, req.ProviderData)
+	}
+	if rec == nil {
 		return nil, provider.NewError(Name, opInquiry, "UNKNOWN_REFERENCE",
-			"transaction is not known to this instance: Winpay inquiry needs the contractId and channel captured at creation",
+			"Winpay inquiry requires the persisted contractId and channel correlation data",
 			provider.ErrNotFound)
 	}
 	switch rec.method {
@@ -716,8 +730,11 @@ func (p *Provider) Cancel(ctx context.Context, req *provider.CancelRequest) (*pr
 	}
 	rec := p.lookup(req.ReferenceID, req.ProviderReference)
 	if rec == nil {
+		rec = recordFromProviderData(req.ProviderReference, req.ProviderData)
+	}
+	if rec == nil {
 		return nil, provider.NewError(Name, opCancel, "UNKNOWN_REFERENCE",
-			"transaction is not known to this instance: Winpay cancel needs the contractId captured at creation",
+			"Winpay cancel requires the persisted contractId and channel correlation data",
 			provider.ErrNotFound)
 	}
 
@@ -767,7 +784,7 @@ func (p *Provider) cancelVA(ctx context.Context, rec *record, trxID, reason stri
 		TrxID:            trxID,
 		AdditionalInfo:   vaRequestAdditional{ContractID: rec.providerRef, Channel: rec.channel},
 	}
-	raw, err := p.call(ctx, http.MethodDelete, pathDeleteVA, payload, opCancel)
+	raw, err := p.call(ctx, http.MethodPost, pathDeleteVA, payload, opCancel)
 	if err != nil {
 		return nil, err
 	}
@@ -1122,6 +1139,41 @@ func (p *Provider) lookup(reference, providerRef string) *record {
 		}
 	}
 	return nil
+}
+
+func providerData(rec *record) map[string]string {
+	if rec == nil {
+		return nil
+	}
+	data := map[string]string{
+		providerDataChannel:     rec.channel,
+		providerDataMethod:      string(rec.method),
+		providerDataTrxID:       rec.trxID,
+		providerDataPaymentCode: rec.paymentCode,
+	}
+	if rec.amount > 0 {
+		data[providerDataAmount] = strconv.FormatInt(int64(rec.amount), 10)
+	}
+	return data
+}
+
+func recordFromProviderData(providerRef string, data map[string]string) *record {
+	if strings.TrimSpace(providerRef) == "" || data == nil {
+		return nil
+	}
+	method := provider.Method(data[providerDataMethod])
+	if !method.IsValid() {
+		return nil
+	}
+	amount, _ := strconv.ParseInt(data[providerDataAmount], 10, 64)
+	return &record{
+		providerRef: providerRef,
+		channel:     data[providerDataChannel],
+		method:      method,
+		trxID:       data[providerDataTrxID],
+		paymentCode: data[providerDataPaymentCode],
+		amount:      provider.Amount(amount),
+	}
 }
 
 // pruneLocked drops records older than recordTTL. It runs at most once per

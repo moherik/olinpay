@@ -152,7 +152,11 @@ func (s *Server) transactionMeta(tx *domain.Transaction) map[string]any {
 		"can_cancel": false,
 		"can_sync":   false,
 	}
-	if p, ok := s.providerGet(tx.ProviderName); ok {
+	p, ok := s.registry.Get(domain.InstanceName(tx.ProviderName, tx.Environment))
+	if !ok {
+		p, ok = s.providerGet(tx.ProviderName)
+	}
+	if ok {
 		caps := p.Capabilities()
 		meta["can_sync"] = caps.SupportsInquiry && tx.ProviderReference != "" && !tx.IsTerminal()
 		meta["can_cancel"] = caps.SupportsCancel && !tx.IsTerminal()

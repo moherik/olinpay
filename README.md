@@ -416,9 +416,9 @@ the mock provider fakes:
   key. This is why `provider.WebhookRequest` carries the callback `Path`.
 - **Custom acknowledgement** — `WebhookResponder` replies with the SNAP
   `{"responseCode":"2002500",...}` body so Winpay does not retry.
-- **Gateway-specific correlation** — Winpay addresses inquiry/cancel by the
-  `contractId` (and a VA number) it returned at creation; the adapter keeps a
-  short-lived cache of those, since the unified contract does not carry them.
+- **Gateway-specific correlation** — Winpay returns a `contractId` plus channel
+  details needed by inquiry/cancel. The adapter stores those details as private
+  transaction data so cancellation survives process restarts and replica changes.
 
 It supports Virtual Accounts, QRIS, eWallets and Modern Retail payment codes. Enable it from the console's
 Providers page: save `partner_id` and `private_key` for the sandbox
@@ -913,10 +913,10 @@ Deliberately left for later:
 
 - further concrete gateway adapters (Duitku, OY!, ...) —
   the interface is ready, see [Adding a provider](#adding-a-provider);
-- persisting the gateway-specific correlation identifiers the Winpay, DOKU and
-  Midtrans **BI-SNAP** adapters currently cache in memory (contractId, VA number,
-  original reference numbers, `X-EXTERNAL-ID`); the legacy Midtrans Core API
-  adapter needs no cache because it addresses by `order_id`;
+- persisting the remaining gateway-specific correlation identifiers the DOKU
+  and Midtrans **BI-SNAP** adapters currently cache in memory (VA number,
+  original reference numbers, `X-EXTERNAL-ID`); Winpay correlation data is
+  persisted with each transaction, and legacy Midtrans Core API needs no cache;
 - refunds as a first-class operation (the pattern is the optional
   `SignatureVerifier`-style extension interface);
 - metrics/tracing, rate limiting, and a message-queue backend for the
