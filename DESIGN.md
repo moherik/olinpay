@@ -226,8 +226,10 @@ difference is the rhythm, not decoration.
 
 ### Mobile shell
 
-The header remains sticky but only 48px tall on mobile so the working area stays
-dominant. At the point the horizontal section navigation no longer fits, it is
+The header remains sticky. On narrow phones, brand and Menu occupy the first
+48px row; environment and account controls reflow into a second compact row.
+From 640px they share one row, with account email shown only when its trigger
+expands at the desktop breakpoint. At the point the horizontal section navigation no longer fits, it is
 replaced by a labeled **Menu** control. Menu opens an accessible dialog containing
 every console destination, marks the current page, and returns focus to its
 trigger when dismissed. Its destination rows, environment choices, and account

@@ -212,6 +212,7 @@ function AccountMenu() {
       <DropdownTrigger asChild>
         <Button
           variant="ghost"
+          aria-label="Account menu"
           className="h-11 w-11 gap-2 px-0 lg:h-8 lg:w-auto lg:pl-1.5 lg:pr-2"
         >
           <span
@@ -220,10 +221,10 @@ function AccountMenu() {
           >
             {initials}
           </span>
-          <span className="hidden text-[12px] text-secondary sm:inline">
+          <span className="hidden max-w-60 truncate text-[12px] text-secondary lg:inline">
             {user?.email}
           </span>
-          <IconChevronDown size={14} />
+          <IconChevronDown size={14} className="hidden lg:block" />
         </Button>
       </DropdownTrigger>
       <DropdownContent>
@@ -278,11 +279,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             : "bg-sandbox-wash",
         )}
       >
-        <div className="flex h-12 items-center justify-between gap-2 px-4 lg:gap-3 lg:px-6">
+        <div className="grid min-h-12 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 px-4 sm:grid-cols-[minmax(0,1fr)_auto_auto] lg:flex lg:h-12 lg:justify-between lg:gap-3 lg:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <Link
               href="/"
-              className="flex items-center gap-2"
+              className="flex min-h-11 items-center gap-2"
               aria-label="AwsemPay console home"
             >
               <span
@@ -296,8 +297,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </span>
             </Link>
           </div>
-          <div className="flex shrink-0 items-center gap-1 lg:gap-3">
-            <SuspendedMobileNavigation />
+          <SuspendedMobileNavigation />
+          <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 pb-1 sm:col-span-1 sm:justify-end sm:pb-0 lg:gap-3">
             <EnvironmentSwitch />
             <AccountMenu />
           </div>

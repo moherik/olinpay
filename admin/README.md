@@ -67,6 +67,9 @@ provider debug logging) are flag-gated off rather than shown greyed out.
   are displayed once and then only stored hashed.
 - `make dev` starts the local backend and console together; use `make dev-stop`
   to stop the supervised process groups.
+- The shell collapses to a labeled **Menu** on narrow screens: brand and Menu
+  keep the first row, the environment and account controls reflow into a second
+  one, and the account email appears only where the trigger expands.
 - This version of Next.js uses Cache Components; the console is a
   client-rendered app behind an auth gate, see the source layout under
   `src/app/(console)/`.

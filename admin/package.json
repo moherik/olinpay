@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test:setup": "node --test src/lib/setup-state.test.mjs",
+    "test:console": "node --test src/lib/console-regressions.test.mjs",
     "test:routing": "node --test src/lib/routing-cycle.test.mjs"
   },
   "dependencies": {
