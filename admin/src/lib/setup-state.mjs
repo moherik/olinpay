@@ -1,5 +1,9 @@
 export const initialState = Object.freeze({ status: "initial" });
 
+export function hasUnacknowledgedSecrets(state, acknowledged) {
+  return !acknowledged && Boolean(state.merchant?.webhookSecret || state.apiKey);
+}
+
 function requireStatus(state, expected) {
   if (!state || state.status !== expected) {
     throw new TypeError(`Expected setup state ${expected}.`);

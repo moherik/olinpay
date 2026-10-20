@@ -6,6 +6,10 @@ const shell = readFileSync(
   new URL("../components/shell/app-shell.tsx", import.meta.url),
   "utf8",
 );
+const setup = readFileSync(
+  new URL("../app/setup/page.tsx", import.meta.url),
+  "utf8",
+);
 
 const header = shell.slice(shell.indexOf("<header"), shell.indexOf("</header>"));
 
@@ -54,4 +58,32 @@ test("the shell keeps its destinations, labels and environment washes", () => {
   }
   assert.match(header, /bg-production-wash/);
   assert.match(header, /bg-sandbox-wash/);
+});
+
+test("the setup page owns the unload warning, not the merchant form", () => {
+  const page = setup.slice(
+    setup.indexOf("export default function SetupPage"),
+    setup.indexOf("function StepCard"),
+  );
+  const form = setup.slice(
+    setup.indexOf("function MerchantForm"),
+    setup.indexOf("function DoneStep"),
+  );
+  assert.match(
+    page,
+    /const \[secretsAcknowledged, setSecretsAcknowledged\] = useState\(false\)/,
+  );
+  assert.match(page, /hasUnacknowledgedSecrets\(merchantSetup, secretsAcknowledged\)/);
+  assert.match(page, /addEventListener\("beforeunload"/);
+  assert.match(page, /removeEventListener\("beforeunload"/);
+  // The form may unmount (Back) or remount (reopen after Skip) at any time.
+  assert.doesNotMatch(form, /beforeunload/);
+  assert.doesNotMatch(form, /secretsAcknowledged/);
+  // Acknowledgement is its own flag, not a reading of the skipped/complete summary.
+  assert.match(page, /if \(value !== "skipped"\) setSecretsAcknowledged\(true\)/);
+  assert.doesNotMatch(page, /secretsAcknowledged = (merchant|fill)/);
+});
+
+test("setup secrets stay in memory", () => {
+  assert.doesNotMatch(setup, /localStorage|sessionStorage|document\.cookie/);
 });

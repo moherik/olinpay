@@ -299,10 +299,22 @@ go vet ./...
 go test ./...
 go test -race ./...
 make check
+npm --prefix admin run test:setup
+npm --prefix admin run test:console
+npm --prefix admin run test:routing
+bash scripts/dev_test.sh
 ```
 
 `make dev` starts the local API and console together; `make dev-stop` stops the
-supervised process groups.
+supervised process groups. Setup's unload warning belongs to the page, so Back and
+reopening a skipped step do not clear it before one-time secrets are acknowledged.
+
+The console suites are plain `node:test` files: `test:setup` covers the setup
+state machine, `test:console` pins the mobile shell and setup-warning contracts
+at source level (no browser harness exists here), and `test:routing` covers the
+routing cycle check. `scripts/dev_test.sh` drives the process supervisor against
+fake HTTP services on ephemeral ports, including the delayed-shutdown and
+TERM-resistant cases.
 
 Most tests are DB-free. `pkg/provider` tests cover the shared request/response tracing transport (metadata at info, redacted bodies at debug, no leaks of authorization headers or token fields). Winpay tests use `httptest` with generated RSA keys; the fake gateway checks signatures on outgoing calls. Midtrans BI-SNAP tests use `httptest` against a stub SNAP API that checks the B2B token and HMAC-SHA512 request signatures, covering create/inquiry/cancel for VA/QRIS/eWallet, token caching, RSA notification verification and status mapping. Midtrans legacy Core API tests use `httptest` against a stub `POST /v2/charge` server that checks the Basic Auth header, covering create/inquiry/cancel for VA (incl. Mandiri echannel)/QRIS/eWallet/retail outlet, the `SHA512(order_id + status_code + gross_amount + server_key)` notification signature, status_code-based error classification and status mapping. Xendit tests use `httptest` against a stub Payments API that checks Basic Auth and the `api-version` header, covering every supported method plus create/inquiry/cancel, `x-callback-token` verification and event/status mapping. DOKU tests use `httptest` against a stub SNAP API that checks the B2B token and HMAC-SHA512 request signatures, covering create/inquiry/cancel for VA/QRIS/eWallet, token caching, and notification signature verification. Live gateway sandbox testing requires valid credentials and current account-specific endpoint details; passing unit tests is not proof of live integration.
 

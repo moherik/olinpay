@@ -22,6 +22,7 @@ import {
 } from "@/lib/api";
 import {
   continueWithoutKey,
+  hasUnacknowledgedSecrets,
   initialState,
   keyCreated,
   keyFailed,
@@ -78,9 +79,21 @@ export default function SetupPage() {
   const [account, setAccount] = useState<string | null>(null);
   const [provider, setProvider] = useState<Fill>(null);
   const [merchant, setMerchant] = useState<Fill>(null);
+  const [secretsAcknowledged, setSecretsAcknowledged] = useState(false);
   const [merchantSetup, setMerchantSetup] = useState<MerchantSetupState>(
     initialState,
   );
+
+  const needsSecretWarning = hasUnacknowledgedSecrets(merchantSetup, secretsAcknowledged);
+  useEffect(() => {
+    if (!needsSecretWarning) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [needsSecretWarning]);
 
   // An already-signed-in visitor (or an installed console) leaves: /setup is
   // only for the very first minutes of an installation.
@@ -226,6 +239,7 @@ export default function SetupPage() {
             onBack={() => setActive("provider")}
             onSetupStateChange={setMerchantSetup}
             onDone={(value) => {
+              if (value !== "skipped") setSecretsAcknowledged(true);
               setMerchant(value);
               advanceFrom("merchant");
             }}
@@ -682,21 +696,6 @@ function MerchantForm({
   const [env, setEnv] = useState("sandbox");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  const secretsVisible =
-    setupState.status === "key-failed" ||
-    setupState.status === "complete-with-key";
-
-  useEffect(() => {
-    if (!secretsVisible || fill !== null) return;
-
-    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", warnBeforeUnload);
-    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
-  }, [fill, secretsVisible]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();

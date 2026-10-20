@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as setupState from "./setup-state.mjs";
 import {
   continueWithoutKey,
   initialState,
@@ -58,4 +59,25 @@ test("state transitions do not retry or revoke keys", () => {
     TypeError,
   );
   assert.throws(() => keyCreated(failed, "sk_test_second"), TypeError);
+});
+
+test("skip then reopen and create warns until secrets are acknowledged", () => {
+  assert.equal(typeof setupState.hasUnacknowledgedSecrets, "function");
+  assert.equal(setupState.hasUnacknowledgedSecrets(initialState, false), false);
+  const created = merchantCreated(initialState, merchant);
+  assert.equal(setupState.hasUnacknowledgedSecrets(created, false), true);
+  const complete = keyCreated(created, "sk_test_first");
+  assert.equal(setupState.hasUnacknowledgedSecrets(complete, false), true);
+  assert.equal(setupState.hasUnacknowledgedSecrets(complete, true), false);
+});
+
+test("reveal then Back retains warning through partial failure and reopening", () => {
+  assert.equal(typeof setupState.hasUnacknowledgedSecrets, "function");
+  const failed = keyFailed(merchantCreated(initialState, merchant), "Lost key response");
+  assert.equal(setupState.hasUnacknowledgedSecrets(failed, false), true);
+  assert.equal(setupState.hasUnacknowledgedSecrets(continueWithoutKey(failed), false), true);
+  assert.equal(setupState.hasUnacknowledgedSecrets(continueWithoutKey(failed), true), false);
+  const noSecret = keyFailed(merchantCreated(initialState, { ...merchant, webhookSecret: null }), "No key");
+  assert.equal(setupState.hasUnacknowledgedSecrets(noSecret, false), false);
+  assert.equal(setupState.hasUnacknowledgedSecrets(keyCreated(merchantCreated(initialState, { ...merchant, webhookSecret: null }), "sk_test_first"), false), true);
 });
