@@ -20,10 +20,23 @@ import {
   fetchMe,
   type RawProviderEntry,
 } from "@/lib/api";
+import {
+  continueWithoutKey,
+  initialState,
+  keyCreated,
+  keyFailed,
+  merchantCreated,
+} from "@/lib/setup-state.mjs";
 import { cn } from "@/lib/utils";
 
 const ORDER = ["account", "provider", "merchant", "done"] as const;
 type StepKey = (typeof ORDER)[number];
+type MerchantSetupState =
+  | typeof initialState
+  | ReturnType<typeof merchantCreated>
+  | ReturnType<typeof keyFailed>
+  | ReturnType<typeof keyCreated>
+  | ReturnType<typeof continueWithoutKey>;
 
 /**
  * What a wizard slot holds:
@@ -65,6 +78,9 @@ export default function SetupPage() {
   const [account, setAccount] = useState<string | null>(null);
   const [provider, setProvider] = useState<Fill>(null);
   const [merchant, setMerchant] = useState<Fill>(null);
+  const [merchantSetup, setMerchantSetup] = useState<MerchantSetupState>(
+    initialState,
+  );
 
   // An already-signed-in visitor (or an installed console) leaves: /setup is
   // only for the very first minutes of an installation.
@@ -201,12 +217,14 @@ export default function SetupPage() {
                 ? "Skipped — you can still create the first merchant here."
                 : merchant
           }
-          clickable={merchant !== null}
+          clickable={merchant !== null || merchantSetup.status !== "initial"}
           onOpen={() => setActive("merchant")}
         >
           <MerchantForm
             fill={merchant}
+            setupState={merchantSetup}
             onBack={() => setActive("provider")}
+            onSetupStateChange={setMerchantSetup}
             onDone={(value) => {
               setMerchant(value);
               advanceFrom("merchant");
@@ -648,11 +666,15 @@ function ProviderForm({
 
 function MerchantForm({
   fill,
+  setupState,
   onBack,
+  onSetupStateChange,
   onDone,
 }: {
   fill: Fill;
+  setupState: MerchantSetupState;
   onBack: () => void;
+  onSetupStateChange: (state: MerchantSetupState) => void;
   onDone: (value: Fill) => void;
 }) {
   const [name, setName] = useState("");
@@ -660,37 +682,74 @@ function MerchantForm({
   const [env, setEnv] = useState("sandbox");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [webhookSecret, setWebhookSecret] = useState<string | null>(null);
-  const [apiKey, setApiKey] = useState<string | null>(null);
+
+  const secretsVisible =
+    setupState.status === "key-failed" ||
+    setupState.status === "complete-with-key";
+
+  useEffect(() => {
+    if (!secretsVisible || fill !== null) return;
+
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [fill, secretsVisible]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (setupState.status !== "initial") return;
     setBusy(true);
     setError(null);
+
+    let merchantState: ReturnType<typeof merchantCreated>;
     try {
       const created = await apiMutate<{ id: string }>("POST", "/merchants", {
         name,
         callback_url: callbackURL,
       });
-      const secret =
-        typeof created.meta.webhook_secret === "string"
-          ? created.meta.webhook_secret
-          : null;
-      setWebhookSecret(secret);
-
-      const key = await apiMutate<{ prefix: string }>("POST", "/api-keys", {
-        merchant_id: created.data.id,
-        label: "Initial key",
+      merchantState = merchantCreated(initialState, {
+        id: created.data.id,
+        name,
         environment: env,
+        webhookSecret:
+          typeof created.meta.webhook_secret === "string"
+            ? created.meta.webhook_secret
+            : null,
       });
-      setApiKey(typeof key.meta.key === "string" ? key.meta.key : null);
-      setBusy(false);
+      onSetupStateChange(merchantState);
     } catch (cause) {
       setError(
         cause instanceof ApiError
           ? cause.message
           : "The request failed — check the fields and try again.",
       );
+      setBusy(false);
+      return;
+    }
+
+    try {
+      const key = await apiMutate<{ prefix: string }>("POST", "/api-keys", {
+        merchant_id: merchantState.merchant.id,
+        label: "Initial key",
+        environment: env,
+      });
+      if (typeof key.meta.key !== "string" || key.meta.key.trim() === "") {
+        throw new TypeError("The API key response could not be confirmed.");
+      }
+      onSetupStateChange(keyCreated(merchantState, key.meta.key));
+    } catch (cause) {
+      onSetupStateChange(
+        keyFailed(
+          merchantState,
+          cause instanceof ApiError
+            ? cause.message
+            : "The API key response could not be confirmed.",
+        ),
+      );
+    } finally {
       setBusy(false);
     }
   }
@@ -717,16 +776,19 @@ function MerchantForm({
     );
   }
 
-  if (apiKey) {
+  if (setupState.status === "complete-with-key") {
     return (
       <div className="flex flex-col gap-4">
         <p className="text-[13px] text-secondary">
-          Both secrets show exactly once — store them now.
+          Both secrets show exactly once. Store them now.
         </p>
-        {webhookSecret ? (
-          <CodeBlock label="webhook_secret" code={webhookSecret} />
+        {setupState.merchant.webhookSecret ? (
+          <CodeBlock
+            label="webhook_secret"
+            code={setupState.merchant.webhookSecret}
+          />
         ) : null}
-        <CodeBlock label="api_key" code={apiKey} />
+        <CodeBlock label="api_key" code={setupState.apiKey} />
         <div className="flex items-center gap-2">
           <Button variant="ghost" onClick={onBack}>
             Back
@@ -734,9 +796,52 @@ function MerchantForm({
           <Button
             variant="primary"
             className="ml-auto"
-            onClick={() => onDone(`${name}, key ${env}`)}
+            onClick={() =>
+              onDone(`${setupState.merchant.name}, key ${setupState.merchant.environment}`)
+            }
           >
             Continue
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (setupState.status === "key-failed") {
+    return (
+      <div className="flex flex-col gap-4">
+        <p className="text-[13px] text-failed" role="alert">
+          The API key could not be confirmed: {setupState.keyError}
+        </p>
+        <p className="text-[13px] text-secondary">
+          Your merchant was created. Finish setup, then use API Keys in the
+          console to inspect or create keys manually. No additional key request
+          was made.
+        </p>
+        {setupState.merchant.webhookSecret ? (
+          <CodeBlock
+            label="webhook_secret"
+            code={setupState.merchant.webhookSecret}
+          />
+        ) : (
+          <p className="text-[13px] text-secondary">
+            The merchant response did not include a webhook secret.
+          </p>
+        )}
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={onBack}>
+            Back
+          </Button>
+          <Button
+            variant="primary"
+            className="ml-auto"
+            onClick={() => {
+              const complete = continueWithoutKey(setupState);
+              onSetupStateChange(complete);
+              onDone(`${complete.merchant.name}, no initial key`);
+            }}
+          >
+            Continue without a key
           </Button>
         </div>
       </div>
