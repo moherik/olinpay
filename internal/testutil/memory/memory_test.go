@@ -65,3 +65,19 @@ func TestAdminUserCreateFirstConcurrent(t *testing.T) {
 		t.Fatalf("Count = %d, want 1", count)
 	}
 }
+
+func TestInvalidMerchantCreateIsRejected(t *testing.T) {
+	merchants := memory.NewStore().Merchants()
+	err := merchants.Create(context.Background(), &domain.Merchant{ID: "mch_legacy"})
+	if !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("Create error = %v, want ErrValidation", err)
+	}
+
+	got, err := merchants.List(context.Background(), 0, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("stored merchants = %d, want 0", len(got))
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/moherik/openpay.id/internal/domain"
+	"github.com/moherik/openpay.id/internal/platform/id"
 	"github.com/moherik/openpay.id/internal/repository"
 	"github.com/moherik/openpay.id/pkg/provider"
 )
@@ -215,6 +216,9 @@ func containsStatus(list []provider.Status, want provider.Status) bool {
 type merchantRepo struct{ store *Store }
 
 func (r *merchantRepo) Create(_ context.Context, m *domain.Merchant) error {
+	if !id.ValidMerchantID(m.ID) {
+		return domain.Invalid("id", "must be an AW identifier")
+	}
 	r.store.mu.Lock()
 	defer r.store.mu.Unlock()
 	// Only real credentials conflict; a console-created merchant has no

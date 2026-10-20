@@ -27,7 +27,7 @@ The four logical components requested in the initial brainstorming are all in on
 | Initial provider scope | Mock provider plus interface | Later user requests added Winpay, Midtrans (legacy Core API and BI-SNAP), Xendit and DOKU as concrete, real-world examples. |
 | Provider registration | `provider.Register(name, factory)` from adapter `init()` | Similar to `database/sql` driver registration; binary blank-imports each shipped adapter. |
 | Routing | Pluggable strategy; built-in `priority`, `round_robin` | Strategies order eligible candidates; create tries them as failover. |
-| Merchant ID | `AW` prefix + 8 random characters, max 10 total | Short, human-typed identifiers (e.g. `AW239823`); no other format is supported. |
+| Merchant ID | `AW` prefix + 8 random characters, 10 total | Short, human-typed identifiers (e.g. `AW9X2K4T7Z`); no other format is supported. |
 | Idempotency | `(merchant_id, reference_id)` | A repeated create request should return the existing transaction, not charge again. |
 | Outbound webhooks | Persist before delivery; retry with exponential backoff | Avoid losing events across process restarts. |
 | Testing | In-memory repositories and `httptest` | Routine tests should not require a database or provider credentials. |
@@ -266,7 +266,7 @@ Known limitations: like Winpay, DOKU addresses status/delete by gateway-specific
 - Every payment runs in an environment (from the API key) and routing candidates are environment-scoped: DB-saved instances are `<adapter>.<env>` and never serve the other environment; env-var instances keep bare names and serve both. A `"provider"` field on create-payment accepts the bare adapter name and resolves to the environment instance (`"winpay"` + sandbox → `winpay.sandbox`); cross-environment forcing is a `no_route`.
 - Admin schema is `migrations/0002_admin.sql` (`admin_users`, `admin_sessions`, `audit_log`, `provider_configs`, plus merchant routing storage changes). Bootstrap through the console's first-install wizard (`POST /api/setup`, public only while no console account exists, then `409 setup_completed`); later accounts are created through the authenticated Users API. There is still no email/password-reset flow.
 
-Schema changes: add a new forward-only migration; update domain, repository interfaces, PostgreSQL scanners/writers, memory implementation, and tests. Consider data backfill/defaults, transaction boundaries, concurrency, and deployed migration state. Do not edit already-deployed migrations as if they had never run.
+Schema changes: add a new forward-only migration; update domain, repository interfaces, PostgreSQL scanners/writers, memory implementation, and tests. Consider data backfill/defaults, transaction boundaries, concurrency, and deployed migration state. Do not edit already-deployed migrations as if they had never run. Migration `0003_merchant_id.sql` rejects pre-existing merchant IDs outside `AW[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}`; incompatible rows must be reset or cleaned up before it can apply.
 
 ## 9. Security and financial correctness
 

@@ -128,7 +128,7 @@ make up
 make migrate
 
 # 4. create a merchant; note the printed API key
-#    (merchant IDs look like AW239823 — AW prefix, max 10 characters)
+#    (merchant IDs look like AW9X2K4T7Z — AW plus eight unambiguous characters)
 make seed
 
 # 5. run the servers (API on :8080, webhook engine on :8081)

@@ -61,7 +61,7 @@ func newHarness(t *testing.T) *harness {
 
 	store := memory.NewStore()
 	merchant := &domain.Merchant{
-		ID:         "mch_test",
+		ID:         "AW9X2K4T7Z",
 		Name:       "Test Merchant",
 		APIKeyHash: "test-hash",
 		Status:     domain.MerchantActive,

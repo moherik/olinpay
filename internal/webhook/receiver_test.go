@@ -50,7 +50,7 @@ func setupWithProvider(t *testing.T, p provider.Provider) *fixture {
 
 	store := memory.NewStore()
 	merchant := &domain.Merchant{
-		ID:            "mch_wh",
+		ID:            "AW9X2K4T7Z",
 		Name:          "Webhook Merchant",
 		CallbackURL:   "http://merchant.test/hooks/openpay",
 		WebhookSecret: "whsec_test",
@@ -85,7 +85,7 @@ func setupWithProvider(t *testing.T, p provider.Provider) *fixture {
 func createPayment(t *testing.T, f *fixture) *domain.Transaction {
 	t.Helper()
 	tx, err := f.engine.CreatePayment(context.Background(), core.CreatePaymentCommand{
-		MerchantID:  "mch_wh",
+		MerchantID:  "AW9X2K4T7Z",
 		ReferenceID: "INV-WH-1",
 		Amount:      99000,
 		Method:      provider.MethodVirtualAccount,
@@ -134,7 +134,7 @@ func TestReceiverAppliesCallbackAndQueuesMerchantWebhook(t *testing.T) {
 		t.Fatalf("receiver status = %d, body = %s", resp.StatusCode, raw)
 	}
 
-	got, err := f.engine.Inquiry(ctx, core.InquiryQuery{MerchantID: "mch_wh", TransactionID: tx.ID})
+	got, err := f.engine.Inquiry(ctx, core.InquiryQuery{MerchantID: "AW9X2K4T7Z", TransactionID: tx.ID})
 	if err != nil {
 		t.Fatalf("Inquiry: %v", err)
 	}

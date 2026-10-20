@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/moherik/openpay.id/internal/domain"
+	"github.com/moherik/openpay.id/internal/platform/id"
 	"github.com/moherik/openpay.id/internal/repository"
 )
 
@@ -25,6 +26,9 @@ var _ repository.MerchantRepository = (*MerchantRepository)(nil)
 
 // Create implements repository.MerchantRepository.
 func (r *MerchantRepository) Create(ctx context.Context, m *domain.Merchant) error {
+	if !id.ValidMerchantID(m.ID) {
+		return fmt.Errorf("postgres: merchant ID: %w", domain.ErrValidation)
+	}
 	routing, err := jsonBytes(m.Routing)
 	if err != nil {
 		return fmt.Errorf("postgres: encoding routing: %w", err)

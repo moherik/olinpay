@@ -52,7 +52,7 @@ func setup(t *testing.T) *fixture {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	merchant := &domain.Merchant{
-		ID:          "mch_admin",
+		ID:          "AW9X2K4T7Z",
 		Name:        "Console Merchant",
 		CallbackURL: "https://example.test/callback",
 		Status:      domain.MerchantActive,
@@ -210,7 +210,7 @@ func (f *fixture) loginAs(t *testing.T, email, role string) *http.Cookie {
 func (f *fixture) seedTransaction(t *testing.T, reference, env string) *domain.Transaction {
 	t.Helper()
 	tx, err := f.engine.CreatePayment(context.Background(), core.CreatePaymentCommand{
-		MerchantID:  "mch_admin",
+		MerchantID:  "AW9X2K4T7Z",
 		Environment: env,
 		ReferenceID: reference,
 		Amount:      150000,
@@ -461,7 +461,7 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	cookie := f.loginAs(t, "owner@console.test", "owner")
 
 	status, data := f.doWith(t, cookie, "POST", "/api/api-keys", map[string]string{
-		"merchant_id": "mch_admin",
+		"merchant_id": "AW9X2K4T7Z",
 		"label":       "hq",
 		"environment": "production",
 	})
@@ -498,7 +498,7 @@ func TestAPIKeyCreatesSandboxScopedKey(t *testing.T) {
 	f := setup(t)
 	cookie := f.loginAs(t, "owner@console.test", "owner")
 	status, data := f.doWith(t, cookie, "POST", "/api/api-keys", map[string]string{
-		"merchant_id": "mch_admin",
+		"merchant_id": "AW9X2K4T7Z",
 		"environment": "sandbox",
 	})
 	if status != 201 {
@@ -879,7 +879,7 @@ func TestMerchantIDsUseAWPrefix(t *testing.T) {
 	}
 	created, _ := data["data"].(map[string]any)
 	mid, _ := created["id"].(string)
-	if !id.MatchesMerchantIDShape(mid) {
+	if !id.ValidMerchantID(mid) {
 		t.Fatalf("created merchant id %q, want an AW-prefixed id of at most %d characters", mid, id.MerchantIDLength)
 	}
 }
@@ -1213,7 +1213,7 @@ func TestAuditLogReadableAndSearched(t *testing.T) {
 	tx := f.seedTransaction(t, "AUD-1", domain.EnvironmentSandbox)
 	f.doWith(t, op, "POST", "/api/transactions/"+tx.ID+"/cancel", nil)
 	f.doWith(t, cookie, "POST", "/api/api-keys", map[string]string{
-		"merchant_id": "mch_admin", "environment": "sandbox",
+		"merchant_id": "AW9X2K4T7Z", "environment": "sandbox",
 	})
 
 	status, data := f.doWith(t, cookie, "GET", "/api/audit?q=cancel", nil)
