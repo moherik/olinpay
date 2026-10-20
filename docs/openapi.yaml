@@ -1,10 +1,11 @@
 openapi: 3.1.0
 info:
-  title: openpay.id API
+  title: AwsemPay API
   version: 0.1.0
   summary: Unified Indonesian payment orchestration API
   description: |
-    Merchant-facing API and gateway-facing inbound webhook endpoint for openpay.id.
+    Merchant-facing API and gateway-facing inbound webhook endpoint for AwsemPay
+    (`openpay.id`).
 
     The merchant API listens on port 8080 by default. The inbound provider
     webhook engine listens on port 8081 by default. Set the server URLs below
@@ -16,7 +17,7 @@ info:
     rupiah. Payment state is asynchronous: a successful create normally returns
     `pending`; use callbacks or `GET /v1/payments/{id}?sync=true` for updates.
   contact:
-    name: openpay.id maintainers
+    name: AwsemPay maintainers
   license:
     name: MIT
     identifier: MIT
@@ -27,7 +28,7 @@ tags:
   - name: Payments
     description: Create, inspect, list, and cancel merchant payments.
   - name: Providers
-    description: Discover providers enabled in this OpenPay process.
+    description: Discover providers enabled in this AwsemPay process.
   - name: Merchant
     description: Current authenticated merchant.
   - name: Operations
@@ -480,7 +481,7 @@ components:
       name: id
       in: path
       required: true
-      description: OpenPay transaction ID (not merchant `reference_id`).
+      description: AwsemPay transaction ID (not merchant `reference_id`).
       schema: { type: string, minLength: 1 }
   responses:
     BadRequest:

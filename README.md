@@ -138,6 +138,17 @@ make run
 # make reset-onboarding          # destructive — asks you to type RESET
 ```
 
+For a first console installation, start the browser console and visit
+`http://localhost:3000/setup`. The browser wizard is the only owner-account
+bootstrap path. It creates the first owner and can optionally configure a
+gateway, merchant, and sandbox key. Save each one-time secret when shown. If
+merchant creation succeeds but its initial key cannot be confirmed, the merchant
+still exists; finish the wizard, then create or manage the key from **API keys**
+in the console.
+
+For local API and console development together, use `make dev`; stop the
+supervised process groups with `make dev-stop`.
+
 Create a payment:
 
 ```bash
@@ -788,6 +799,11 @@ process restarts). Env-configured instances remain the fallback so a bare
 configured provider from either source, the server still starts for
 first-install administration, but payment creation returns a no-route error
 until a provider is configured.
+
+Migrations are forward-only. In particular, migration `0003_merchant_id.sql`
+rejects existing merchant IDs that do not match `AW[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}`.
+Clean up or reset incompatible local data before applying it; migrations do not
+rewrite IDs automatically.
 
 ### Provider API logging
 

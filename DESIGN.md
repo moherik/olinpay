@@ -1,6 +1,6 @@
-# openpay.id admin console: design direction
+# AwsemPay (`openpay.id`) admin console: design direction
 
-Design direction for the openpay.id admin console (Next.js and shadcn/ui). Read
+Design direction for the AwsemPay (`openpay.id`) admin console (Next.js and shadcn/ui). Read
 together with `antislop.md` (the filter); this file supplies the identity the
 filter cannot invent.
 
@@ -12,7 +12,7 @@ is easy to spot and change.
 
 ## What this is
 
-- Product: the internal console for openpay.id, a payment orchestrator between
+- Product: the internal console for AwsemPay (`openpay.id`), a payment orchestrator between
   Indonesian businesses and the country's payment gateways (PJP).
 - Audience: owners, operators and the technical team. People who read this
   screen for hours, often under pressure when a payment is stuck.
@@ -223,6 +223,15 @@ is reserved for the rare fixed abbreviation.
 Density is the point: rows stay tight so an operator can scan many at once, while
 section gaps stay large enough that screens do not blur into one another. That gap
 difference is the rhythm, not decoration.
+
+### Mobile shell
+
+The header remains sticky but only 48px tall on mobile so the working area stays
+dominant. At the point the horizontal section navigation no longer fits, it is
+replaced by a labeled **Menu** control. Menu opens an accessible dialog containing
+every console destination, marks the current page, and returns focus to its
+trigger when dismissed. Its destination rows, environment choices, and account
+trigger use 44px targets on mobile; desktop returns to the 32px dense controls.
 
 ## Shape, elevation, motion
 

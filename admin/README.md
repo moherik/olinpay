@@ -33,6 +33,15 @@ gateway credentials and the first merchant + API key.
 Later console accounts are created by an authenticated owner through the Users
 API. Sign in at `/login`; a session lasts 12 hours.
 
+The first owner is created only through the browser wizard at `/setup`; there is
+no CLI bootstrap path. Gateway setup is optional, so the backend can start with
+no configured providers for first-install administration. Payment creation has
+no route until an enabled provider is configured.
+
+The wizard reveals each new merchant webhook secret and API key once. If merchant
+creation succeeds but key creation cannot be confirmed, finish the wizard and
+create or manage the merchant's keys manually from **API keys**.
+
 ## What it covers
 
 - **Overview** — environment-scoped totals, hourly volume, delivery state and
@@ -56,6 +65,8 @@ provider debug logging) are flag-gated off rather than shown greyed out.
 
 - One-time secrets (merchant webhook secret, API key, invited user password)
   are displayed once and then only stored hashed.
+- `make dev` starts the local backend and console together; use `make dev-stop`
+  to stop the supervised process groups.
 - This version of Next.js uses Cache Components; the console is a
   client-rendered app behind an auth gate, see the source layout under
   `src/app/(console)/`.

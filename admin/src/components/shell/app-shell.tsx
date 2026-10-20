@@ -2,9 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { IconChevronDown } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import {
+  DialogClose,
+  DialogContent,
+  DialogRoot,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import {
   DropdownContent,
   DropdownItem,
@@ -85,6 +91,68 @@ function SuspendedNav() {
   );
 }
 
+function MobileNavigation() {
+  const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <DialogRoot open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-11 px-3 text-[13px] lg:hidden"
+        >
+          Menu
+        </Button>
+      </DialogTrigger>
+      <DialogContent
+        title="Sections"
+        description="Choose a console area."
+        className="lg:hidden"
+      >
+        <nav aria-label="Admin sections">
+          <ul className="flex flex-col gap-1">
+            {navItems.map((item) => {
+              const active = isActive(pathname, item.href);
+              return (
+                <li key={item.href}>
+                  <DialogClose asChild>
+                    <Link
+                      href={item.href}
+                      aria-current={active ? "page" : undefined}
+                      className={cn(
+                        "flex min-h-11 items-center rounded-control px-3 text-[13px] transition-colors",
+                        active
+                          ? "bg-accent-soft font-medium text-ink"
+                          : "text-secondary hover:bg-surface-muted hover:text-ink",
+                      )}
+                    >
+                      {item.label}
+                    </Link>
+                  </DialogClose>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+      </DialogContent>
+    </DialogRoot>
+  );
+}
+
+function MobileNavigationFallback() {
+  return <span aria-hidden="true" className="h-11 w-[58px] lg:hidden" />;
+}
+
+function SuspendedMobileNavigation() {
+  return (
+    <Suspense fallback={<MobileNavigationFallback />}>
+      <MobileNavigation />
+    </Suspense>
+  );
+}
+
 function EnvironmentSwitch() {
   const { environment, setEnvironment } = useApp();
   const options: { value: Environment; label: string }[] = [
@@ -106,7 +174,7 @@ function EnvironmentSwitch() {
             aria-pressed={active}
             onClick={() => setEnvironment(option.value)}
             className={cn(
-              "rounded-[3px] px-2 py-1 text-[12px] font-medium transition-colors",
+              "h-11 rounded-[3px] px-2 text-[12px] font-medium transition-colors lg:h-6",
               active
                 ? "bg-surface text-ink shadow-[var(--shadow-raised)]"
                 : "text-muted hover:text-ink",
@@ -141,7 +209,10 @@ function AccountMenu() {
   return (
     <DropdownRoot>
       <DropdownTrigger asChild>
-        <Button variant="ghost" className="gap-2 pl-1.5 pr-2">
+        <Button
+          variant="ghost"
+          className="h-11 w-11 gap-2 px-0 lg:h-8 lg:w-auto lg:pl-1.5 lg:pr-2"
+        >
           <span
             aria-hidden="true"
             className="flex h-6 w-6 items-center justify-center rounded-full bg-ink text-[11px] font-medium text-canvas"
@@ -203,11 +274,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           "sticky top-0 z-40 border-b border-border",
           environment === "production"
             ? "bg-production-wash"
-            : "bg-yellow-500",
+            : "bg-sandbox-wash",
         )}
       >
-        <div className="flex h-12 items-center justify-between gap-3 px-4 lg:px-6">
-          <div className="flex items-center gap-3">
+        <div className="flex h-12 items-center justify-between gap-2 px-4 lg:gap-3 lg:px-6">
+          <div className="flex min-w-0 items-center gap-3">
             <Link
               href="/"
               className="flex items-center gap-2"
@@ -224,16 +295,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </span>
             </Link>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-1 lg:gap-3">
+            <SuspendedMobileNavigation />
             <EnvironmentSwitch />
             <AccountMenu />
           </div>
         </div>
-        <div className="flex h-full items-center px-4 lg:px-6">
+        <div className="hidden h-full items-center px-4 lg:flex lg:px-6">
           <SuspendedNav />
         </div>
       </header>
-      <main className="mx-auto max-w-330 px-4 py-5 lg:px-6">
+      <main className="mx-auto min-w-0 max-w-330 px-4 py-5 lg:px-6">
         {children}
       </main>
     </div>
