@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -79,7 +80,8 @@ type loggingTransport struct {
 // RoundTrip implements [http.RoundTripper].
 func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	logger := HTTPLogger()
-	if logger == nil || t.base == nil {
+	recorder := CurrentHTTPActivityRecorder()
+	if (logger == nil && recorder == nil) || t.base == nil {
 		base := t.base
 		if base == nil {
 			base = http.DefaultTransport
@@ -88,14 +90,14 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 
 	ctx := req.Context()
-	verbose := logger.Enabled(ctx, slog.LevelDebug)
+	verbose := logger != nil && logger.Enabled(ctx, slog.LevelDebug)
 
 	attrs := []any{
 		"provider", t.provider,
 		"method", req.Method,
 		"url", req.URL.String(),
 	}
-	if verbose {
+	if verbose || recorder != nil {
 		attrs = append(attrs, "request_headers", redactHeader(req.Header))
 		if body, ok := peekRequestBody(req); ok {
 			attrs = append(attrs, "request_body", redactJSON(body))
@@ -107,25 +109,50 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	elapsed := time.Since(start).Milliseconds()
 
 	if err != nil {
-		logger.WarnContext(ctx, "provider api call failed",
-			append(attrs, "duration_ms", elapsed, "error", err.Error())...)
+		if recorder != nil {
+			trace := HTTPTrace{Provider: t.provider, Method: req.Method, URL: req.URL.String(), RequestHeaders: redactHeader(req.Header), RequestBody: redactBodyForTrace(req), DurationMs: elapsed, Error: err.Error()}
+			go recorder(context.WithoutCancel(ctx), trace)
+		}
+		if logger != nil {
+			logger.WarnContext(ctx, "provider api call failed",
+				append(attrs, "duration_ms", elapsed, "error", err.Error())...)
+		}
 		return resp, err
 	}
 
 	attrs = append(attrs, "status", resp.StatusCode, "duration_ms", elapsed)
-	if verbose {
+	if verbose || recorder != nil {
 		attrs = append(attrs, "response_headers", redactHeader(resp.Header))
 		if body, ok := peekResponseBody(resp); ok {
 			attrs = append(attrs, "response_body", redactJSON(body))
 		}
 	}
+	if recorder != nil {
+		trace := HTTPTrace{Provider: t.provider, Method: req.Method, URL: req.URL.String(), RequestHeaders: redactHeader(req.Header), ResponseHeaders: redactHeader(resp.Header), StatusCode: resp.StatusCode, DurationMs: elapsed}
+		if body, ok := peekRequestBody(req); ok {
+			trace.RequestBody = redactJSON(body)
+		}
+		if body, ok := peekResponseBody(resp); ok {
+			trace.ResponseBody = redactJSON(body)
+		}
+		go recorder(context.WithoutCancel(ctx), trace)
+	}
 
-	if resp.StatusCode >= http.StatusBadRequest {
-		logger.WarnContext(ctx, "provider api call rejected", attrs...)
-	} else {
-		logger.InfoContext(ctx, "provider api call", attrs...)
+	if logger != nil {
+		if resp.StatusCode >= http.StatusBadRequest {
+			logger.WarnContext(ctx, "provider api call rejected", attrs...)
+		} else {
+			logger.InfoContext(ctx, "provider api call", attrs...)
+		}
 	}
 	return resp, nil
+}
+
+func redactBodyForTrace(req *http.Request) string {
+	if body, ok := peekRequestBody(req); ok {
+		return redactJSON(body)
+	}
+	return ""
 }
 
 // peekRequestBody returns a copy of the request body for logging, restoring the
@@ -168,7 +195,7 @@ func peekResponseBody(resp *http.Response) ([]byte, bool) {
 	if resp.Body == nil || resp.Body == http.NoBody {
 		return nil, false
 	}
-	b, err := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxLogBodyBytes+1))
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(b))
 	if err != nil {

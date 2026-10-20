@@ -828,6 +828,12 @@ charge tokens, secrets, card data) are redacted as `***`, and bodies are capped
 at 8 KiB. Tracing is installed automatically by the host binary; adapters opt in
 by constructing their client with `provider.NewHTTPClient`.
 
+The admin console also persists a redacted, 64 KiB-capped activity stream for
+each transaction. The transaction detail page shows merchant request/response,
+provider request/response, provider callbacks, and every outbound merchant
+webhook attempt in chronological order. The corresponding admin endpoint is
+`GET /admin/api/transactions/{id}/activities?limit=200`.
+
 ## Testing
 
 ```bash

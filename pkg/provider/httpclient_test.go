@@ -166,6 +166,33 @@ func TestHTTPClientWithoutLogger(t *testing.T) {
 	}
 }
 
+func TestHTTPClientRecordsActivityWithoutLogger(t *testing.T) {
+	SetHTTPLogger(nil)
+	var traces chan HTTPTrace = make(chan HTTPTrace, 1)
+	SetHTTPActivityRecorder(func(_ context.Context, trace HTTPTrace) { traces <- trace })
+	t.Cleanup(func() { SetHTTPActivityRecorder(nil) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	client := NewHTTPClient("probe", 5*time.Second)
+	resp, err := client.Post(srv.URL, "application/json", strings.NewReader(`{"token":"secret","ok":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	select {
+	case trace := <-traces:
+		if trace.StatusCode != http.StatusOK || strings.Contains(trace.RequestBody, "secret") {
+			t.Fatalf("unexpected trace: %+v", trace)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("activity recorder was not called")
+	}
+}
+
 func TestRedactJSON(t *testing.T) {
 	cases := []struct {
 		name string

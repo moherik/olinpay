@@ -61,7 +61,7 @@ API/core ──> repository interfaces ──> PostgreSQL implementation
 | `internal/repository` | Persistence interfaces and query filters. |
 | `internal/repository/postgres` | pgx repositories and SQL. |
 | `internal/testutil/memory` | In-memory repositories for tests. |
-| `internal/webhook` | PJP callback receiver and persisted outbound dispatcher/retries. |
+| `internal/webhook` | PJP callback receiver and persisted outbound dispatcher/retries, with transaction activity capture. |
 | `internal/platform` | Logging, IDs, HTTP helpers, migration runner; no business rules. |
 | `pkg/provider` | Public provider contract, unified types/statuses/errors, registry and webhook request. |
 | `pkg/provider/mock` | Deterministic in-memory gateway and simple reference adapter. |
@@ -324,7 +324,7 @@ Most tests are DB-free. `pkg/provider` tests cover the shared request/response t
 
 ## 11. Current status and roadmap
 
-Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/Modern Retail/QRIS/eWallet), Midtrans legacy Core API adapter (VA/QRIS/eWallet/retail outlet), Midtrans BI-SNAP adapter (VA/QRIS/eWallet), Xendit Payments API v3 adapter (VA/QRIS/eWallet/retail outlet/pay later/card), DOKU SNAP adapter (VA/QRIS/eWallet), provider API request/response tracing, provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
+Implemented: merchant API, core engine and routing (`priority`, `round_robin`), mock adapter, Winpay SNAP adapter (VA/Modern Retail/QRIS/eWallet), Midtrans legacy Core API adapter (VA/QRIS/eWallet/retail outlet), Midtrans BI-SNAP adapter (VA/QRIS/eWallet), Xendit Payments API v3 adapter (VA/QRIS/eWallet/retail outlet/pay later/card), DOKU SNAP adapter (VA/QRIS/eWallet), provider API request/response tracing, persisted redacted transaction activity, provider registry/contract, inbound webhooks, signed/retried outbound webhooks, PostgreSQL persistence/migrations, CLI, and tests.
 
 Known/planned: persist Winpay/Midtrans BI-SNAP/DOKU gateway correlation values (the legacy Midtrans Core API adapter needs none); live sandbox verification; additional gateway adapters; first-class refunds; production queue/metrics/dashboards (provider-request tracing already ships); stronger recovery for provider success followed by DB failure; email flows for console accounts (password reset/invite). Do not claim roadmap items are implemented.
 

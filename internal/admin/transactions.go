@@ -90,6 +90,35 @@ func (s *Server) getTransaction(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, tx, meta)
 }
 
+func (s *Server) listTransactionActivities(w http.ResponseWriter, r *http.Request) {
+	id := chiURLParam(r, "id")
+	tx, err := s.transactions.GetByID(r.Context(), id)
+	if err != nil {
+		notFound(w, "transaction")
+		return
+	}
+	limit := parseInt(r.URL.Query().Get("limit"), 200)
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	if s.activities == nil {
+		writeData(w, http.StatusOK, []*domain.TransactionActivity{}, map[string]any{"count": 0})
+		return
+	}
+	items, err := s.activities.List(r.Context(), repository.ActivityFilter{
+		TransactionID: id,
+		MerchantID:    tx.MerchantID,
+		Environment:   tx.Environment,
+		ReferenceID:   tx.ReferenceID,
+		Limit:         limit,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "cannot list transaction activity")
+		return
+	}
+	writeData(w, http.StatusOK, items, map[string]any{"count": len(items)})
+}
+
 // cancelTransaction serves POST /api/transactions/{id}/cancel {reason}.
 // The core engine owns the status transition: this handler only authorizes it
 // (the route is operator and above) and records the audit entry.

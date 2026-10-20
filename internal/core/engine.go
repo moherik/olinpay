@@ -226,6 +226,7 @@ func (e *Engine) CreatePayment(ctx context.Context, cmd CreatePaymentCommand) (*
 		Metadata:    effectiveMetadata,
 	}
 
+	ctx = provider.WithTraceContext(ctx, provider.TraceContext{MerchantID: merchant.ID, Environment: cmd.Environment, ReferenceID: cmd.ReferenceID})
 	resp, chosen, err := e.attemptCreate(ctx, candidates, provReq)
 	if err != nil {
 		// A routing-level custom response answers instead of the provider
@@ -341,6 +342,7 @@ func (e *Engine) Inquiry(ctx context.Context, q InquiryQuery) (*domain.Transacti
 		return tx, nil
 	}
 
+	ctx = provider.WithTraceContext(ctx, provider.TraceContext{MerchantID: tx.MerchantID, Environment: tx.Environment, ReferenceID: tx.ReferenceID, TransactionID: tx.ID})
 	resp, err := p.Inquiry(ctx, &provider.InquiryRequest{
 		ReferenceID:       tx.ReferenceID,
 		ProviderReference: tx.ProviderReference,
@@ -378,6 +380,7 @@ func (e *Engine) Cancel(ctx context.Context, cmd CancelCommand) (*domain.Transac
 	if reason == "" {
 		reason = "cancel"
 	}
+	ctx = provider.WithTraceContext(ctx, provider.TraceContext{MerchantID: tx.MerchantID, Environment: tx.Environment, ReferenceID: tx.ReferenceID, TransactionID: tx.ID})
 	resp, err := p.Cancel(ctx, &provider.CancelRequest{
 		ReferenceID:       tx.ReferenceID,
 		ProviderReference: tx.ProviderReference,

@@ -13,6 +13,7 @@ import (
 
 	"github.com/moherik/openpay.id/internal/config"
 	"github.com/moherik/openpay.id/internal/domain"
+	"github.com/moherik/openpay.id/internal/platform/activity"
 	"github.com/moherik/openpay.id/internal/platform/id"
 	"github.com/moherik/openpay.id/internal/repository"
 )
@@ -38,9 +39,14 @@ type Dispatcher struct {
 	client     *http.Client
 	cfg        config.WebhookConfig
 	log        *slog.Logger
+	activities repository.TransactionActivityRepository
 
 	now   func() time.Time
 	newID func() string
+}
+
+func (d *Dispatcher) SetActivityRepository(repo repository.TransactionActivityRepository) {
+	d.activities = repo
 }
 
 // NewDispatcher builds the outbound dispatcher.
@@ -161,6 +167,7 @@ func (d *Dispatcher) process(ctx context.Context) {
 func (d *Dispatcher) attempt(ctx context.Context, delivery *domain.WebhookDelivery) {
 	dctx, cancel := ContextWithTimeout(ctx, d.cfg.Timeout)
 	defer cancel()
+	startedAt := d.now()
 
 	secret := d.merchantSecret(dctx, delivery.MerchantID)
 
@@ -181,17 +188,42 @@ func (d *Dispatcher) attempt(ctx context.Context, delivery *domain.WebhookDelive
 
 	resp, err := d.client.Do(req)
 	if err != nil {
+		d.recordActivity(delivery, req, nil, 0, nil, err.Error(), delivery.Attempts+1, startedAt)
 		d.recordFailure(ctx, delivery, err.Error())
 		return
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	_ = resp.Body.Close()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		d.recordActivity(delivery, req, resp.Header, resp.StatusCode, body, "", delivery.Attempts+1, startedAt)
 		d.recordSuccess(ctx, delivery, resp.StatusCode)
 		return
 	}
-	d.recordFailure(ctx, delivery, fmt.Sprintf("merchant responded with status %d", resp.StatusCode))
+	note := fmt.Sprintf("merchant responded with status %d", resp.StatusCode)
+	d.recordActivity(delivery, req, resp.Header, resp.StatusCode, body, note, delivery.Attempts+1, startedAt)
+	d.recordFailure(ctx, delivery, note)
+}
+
+func (d *Dispatcher) recordActivity(delivery *domain.WebhookDelivery, req *http.Request, responseHeaders http.Header, status int, body []byte, note string, attempt int, startedAt time.Time) {
+	if d.activities == nil {
+		return
+	}
+	now := d.now()
+	request := &domain.TransactionActivity{
+		ID: id.NewPrefixed("act"), TransactionID: delivery.TransactionID, MerchantID: delivery.MerchantID,
+		Environment: delivery.Environment, ReferenceID: "", Direction: domain.ActivityMerchantWebhook,
+		Phase: domain.ActivityRequest, EventType: delivery.EventType, Method: req.Method, URL: req.URL.String(),
+		Headers: map[string][]string(activity.RedactHeaders(req.Header)), Body: activity.RedactBody(delivery.Payload), Attempt: attempt, CreatedAt: startedAt,
+	}
+	response := &domain.TransactionActivity{
+		ID: id.NewPrefixed("act"), TransactionID: delivery.TransactionID, MerchantID: delivery.MerchantID,
+		Environment: delivery.Environment, Direction: domain.ActivityMerchantWebhook, Phase: domain.ActivityResponse,
+		Method: req.Method, URL: req.URL.String(), Headers: map[string][]string(activity.RedactHeaders(responseHeaders)), StatusCode: status,
+		DurationMs: now.Sub(startedAt).Milliseconds(), Body: activity.RedactBody(body), Error: note, Attempt: attempt, CreatedAt: now,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	go func() { defer cancel(); _ = d.activities.Create(ctx, request); _ = d.activities.Create(ctx, response) }()
 }
 
 func (d *Dispatcher) recordSuccess(ctx context.Context, delivery *domain.WebhookDelivery, status int) {

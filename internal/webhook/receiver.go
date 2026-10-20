@@ -22,6 +22,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/moherik/openpay.id/internal/core"
 	"github.com/moherik/openpay.id/internal/domain"
+	"github.com/moherik/openpay.id/internal/platform/activity"
 	"github.com/moherik/openpay.id/internal/platform/httpx"
 	"github.com/moherik/openpay.id/internal/platform/id"
 	"github.com/moherik/openpay.id/internal/repository"
@@ -43,16 +45,21 @@ const maxCallbackBytes = 2 << 20 // 2 MiB
 
 // Receiver is the inbound webhook engine.
 type Receiver struct {
-	registry *provider.Registry
-	engine   *core.Engine
-	events   repository.InboundEventRepository
-	log      *slog.Logger
-	now      func() time.Time
-	newID    func() string
+	registry   *provider.Registry
+	engine     *core.Engine
+	events     repository.InboundEventRepository
+	activities repository.TransactionActivityRepository
+	log        *slog.Logger
+	now        func() time.Time
+	newID      func() string
 	// envFor reports the environment a provider instance is known to serve, so
 	// callbacks that fail to correlate still land under a sensible
 	// environment. Empty means unknown, which every console filter shows.
 	envFor func(providerName string) string
+}
+
+func (r *Receiver) SetActivityRepository(repo repository.TransactionActivityRepository) {
+	r.activities = repo
 }
 
 // NewReceiver builds the inbound webhook engine. The event repository is
@@ -93,6 +100,7 @@ func (r *Receiver) Mount(router chi.Router) {
 // Handle processes one inbound gateway callback.
 func (r *Receiver) Handle(w http.ResponseWriter, req *http.Request) {
 	name := chi.URLParam(req, "provider")
+	startedAt := time.Now()
 	p, ok := r.registry.Get(name)
 	if !ok {
 		httpx.WriteError(w, http.StatusNotFound, "provider_not_found",
@@ -163,6 +171,9 @@ func (r *Receiver) Handle(w http.ResponseWriter, req *http.Request) {
 		r.log.Error("cannot apply webhook", "provider", name, "error", err.Error())
 		r.record(inboundFromEvent(name, env, evt, remoteAddr, false, err.Error()))
 		httpx.WriteError(w, http.StatusNotFound, "transaction_not_found", err.Error(), "")
+		if tx != nil {
+			r.recordActivity(wreq, tx, domain.ActivityProviderWebhook, http.StatusNotFound, []byte(`{"error":"transaction not found"}`), err.Error(), nil, nil, 0, startedAt)
+		}
 		return
 	}
 
@@ -181,14 +192,44 @@ func (r *Receiver) Handle(w http.ResponseWriter, req *http.Request) {
 			status = http.StatusOK
 		}
 		httpx.WriteRaw(w, status, ack)
+		applied := true
+		signed := true
+		r.recordActivity(wreq, tx, domain.ActivityProviderWebhook, status, ack, "", &signed, &applied, 0, startedAt)
 		return
 	}
-
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"received":       true,
 		"transaction_id": tx.ID,
 		"status":         tx.Status,
-	})
+	}
+	ack, _ := json.Marshal(response)
+	signed, applied := true, true
+	r.recordActivity(wreq, tx, domain.ActivityProviderWebhook, http.StatusOK, ack, "", &signed, &applied, 0, startedAt)
+	httpx.WriteJSON(w, http.StatusOK, response)
+}
+
+func (r *Receiver) recordActivity(req *provider.WebhookRequest, tx *domain.Transaction, direction domain.ActivityDirection, status int, response []byte, note string, signatureValid, applied *bool, attempt int, startedAt time.Time) {
+	if r.activities == nil {
+		return
+	}
+	merchantID, environment, transactionID, reference := "", "", "", ""
+	if tx != nil {
+		merchantID, environment, transactionID, reference = tx.MerchantID, tx.Environment, tx.ID, tx.ReferenceID
+	}
+	request := &domain.TransactionActivity{ID: id.NewPrefixed("act"), TransactionID: transactionID, MerchantID: merchantID, Environment: environment, ReferenceID: reference, Direction: direction, Phase: domain.ActivityRequest, Method: http.MethodPost, URL: req.Path, Headers: map[string][]string(activity.RedactHeaders(req.Headers)), Body: activity.RedactBody(req.Body), SignatureValid: signatureValid, Applied: applied, Attempt: attempt, CreatedAt: startedAt}
+	responseActivity := *request
+	responseActivity.ID = id.NewPrefixed("act")
+	responseActivity.Phase = domain.ActivityResponse
+	responseActivity.StatusCode = status
+	responseActivity.DurationMs = time.Since(startedAt).Milliseconds()
+	responseActivity.Body = activity.RedactBody(response)
+	responseActivity.Error = note
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	go func() {
+		defer cancel()
+		_ = r.activities.Create(ctx, request)
+		_ = r.activities.Create(ctx, &responseActivity)
+	}()
 }
 
 // inboundFromEvent builds the history row for a parsed callback.

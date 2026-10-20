@@ -15,12 +15,17 @@ import (
 )
 
 type Server struct {
-	engine    *core.Engine
-	merchants repository.MerchantRepository
-	apiKeys   repository.APIKeyRepository
-	admin     http.Handler
-	pepper    string
-	log       *slog.Logger
+	engine     *core.Engine
+	merchants  repository.MerchantRepository
+	apiKeys    repository.APIKeyRepository
+	admin      http.Handler
+	pepper     string
+	log        *slog.Logger
+	activities repository.TransactionActivityRepository
+}
+
+func (s *Server) SetActivityRepository(repo repository.TransactionActivityRepository) {
+	s.activities = repo
 }
 
 // NewServer builds the API server.

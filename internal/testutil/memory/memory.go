@@ -27,6 +27,7 @@ type Store struct {
 	adminSessions   map[string]*domain.AdminSession
 	auditEntries    []*domain.AuditEntry
 	inboundEvents   map[string]*domain.InboundEvent
+	activities      map[string]*domain.TransactionActivity
 	providerConfigs map[string]*domain.ProviderConfig
 }
 
@@ -40,6 +41,7 @@ func NewStore() *Store {
 		adminUsers:      make(map[string]*domain.AdminUser),
 		adminSessions:   make(map[string]*domain.AdminSession),
 		inboundEvents:   make(map[string]*domain.InboundEvent),
+		activities:      make(map[string]*domain.TransactionActivity),
 		providerConfigs: make(map[string]*domain.ProviderConfig),
 	}
 }
@@ -67,6 +69,10 @@ func (s *Store) Audit() repository.AuditRepository { return &auditRepo{store: s}
 
 // Inbound returns the inbound event repository view.
 func (s *Store) Inbound() repository.InboundEventRepository { return &inboundRepo{store: s} }
+
+func (s *Store) Activities() repository.TransactionActivityRepository {
+	return &activityRepo{store: s}
+}
 
 // ProviderConfigs returns the provider config repository view.
 func (s *Store) ProviderConfigs() repository.ProviderConfigRepository {
@@ -473,6 +479,67 @@ func (r *apiKeyRepo) EnvironmentsOfMerchant(_ context.Context, merchantID string
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+type activityRepo struct{ store *Store }
+
+func (r *activityRepo) Create(_ context.Context, a *domain.TransactionActivity) error {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	clone := *a
+	clone.Headers = cloneHeaders(a.Headers)
+	r.store.activities[a.ID] = &clone
+	return nil
+}
+
+func (r *activityRepo) List(_ context.Context, f repository.ActivityFilter) ([]*domain.TransactionActivity, error) {
+	r.store.mu.RLock()
+	defer r.store.mu.RUnlock()
+	out := make([]*domain.TransactionActivity, 0)
+	for _, a := range r.store.activities {
+		if f.TransactionID != "" {
+			byID := a.TransactionID == f.TransactionID
+			byReference := a.TransactionID == "" && f.MerchantID != "" && f.ReferenceID != "" &&
+				a.MerchantID == f.MerchantID && a.Environment == f.Environment && a.ReferenceID == f.ReferenceID
+			if !byID && !byReference {
+				continue
+			}
+		} else {
+			if f.MerchantID != "" && a.MerchantID != f.MerchantID {
+				continue
+			}
+			if f.Environment != "" && a.Environment != f.Environment {
+				continue
+			}
+			if f.ReferenceID != "" && a.ReferenceID != f.ReferenceID {
+				continue
+			}
+		}
+		clone := *a
+		clone.Headers = cloneHeaders(a.Headers)
+		out = append(out, &clone)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	if f.Limit > 0 && len(out) > f.Limit {
+		out = out[len(out)-f.Limit:]
+	}
+	return out, nil
+}
+
+func cloneHeaders(in map[string][]string) map[string][]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for key, values := range in {
+		out[key] = append([]string(nil), values...)
+	}
+	return out
 }
 
 // --- admin users -----------------------------------------------------------

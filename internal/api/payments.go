@@ -1,6 +1,10 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,7 +14,9 @@ import (
 
 	"github.com/moherik/openpay.id/internal/core"
 	"github.com/moherik/openpay.id/internal/domain"
+	"github.com/moherik/openpay.id/internal/platform/activity"
 	"github.com/moherik/openpay.id/internal/platform/httpx"
+	"github.com/moherik/openpay.id/internal/platform/id"
 	"github.com/moherik/openpay.id/internal/repository"
 	"github.com/moherik/openpay.id/pkg/provider"
 )
@@ -24,6 +30,12 @@ func (s *Server) createPayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body createPaymentRequest
+	rawRequest, readErr := io.ReadAll(io.LimitReader(r.Body, httpx.MaxBodyBytes+1))
+	if readErr != nil || len(rawRequest) > httpx.MaxBodyBytes {
+		fail(w, r, domain.Invalid("body", "request body is too large"), "")
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(rawRequest))
 	if err := httpx.DecodeJSON(r, &body, 0); err != nil {
 		fail(w, r, domain.Invalid("body", err.Error()), "")
 		return
@@ -49,6 +61,8 @@ func (s *Server) createPayment(w http.ResponseWriter, r *http.Request) {
 		Expiry:       time.Duration(body.ExpirySeconds) * time.Second,
 		Metadata:     body.Metadata,
 	}
+	startedAt := time.Now()
+	s.recordMerchantActivity(r, domain.ActivityMerchantRequest, merchant.ID, cmd.Environment, body.ReferenceID, "", rawRequest, 0, startedAt)
 
 	tx, err := s.engine.CreatePayment(r.Context(), cmd)
 	if err != nil {
@@ -56,6 +70,30 @@ func (s *Server) createPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusCreated, tx, nil)
+	responseBody, _ := json.Marshal(map[string]any{"data": tx})
+	s.recordMerchantActivity(r, domain.ActivityMerchantResponse, tx.MerchantID, tx.Environment, tx.ReferenceID, tx.ID, responseBody, http.StatusCreated, time.Now())
+}
+
+func (s *Server) recordMerchantActivity(r *http.Request, direction domain.ActivityDirection, merchantID, environment, referenceID, transactionID string, body []byte, status int, createdAt time.Time) {
+	if s.activities == nil {
+		return
+	}
+	activityRow := domain.TransactionActivity{
+		MerchantID: merchantID, Environment: environment, ReferenceID: referenceID,
+		TransactionID: transactionID, Direction: direction, Phase: domain.ActivityRequest,
+		Method: r.Method, URL: r.URL.String(), CreatedAt: createdAt,
+		Headers: activity.RedactHeaders(r.Header),
+	}
+	activityRow.ID = id.NewPrefixed("act")
+	activityRow.Phase = domain.ActivityRequest
+	if direction == domain.ActivityMerchantResponse {
+		activityRow.Phase = domain.ActivityResponse
+	}
+	activityRow.StatusCode = status
+	activityRow.Body = activity.RedactBody(body)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = s.activities.Create(ctx, &activityRow)
 }
 
 // getPayment handles GET /v1/payments/{id}. Use ?sync=true to refresh from the

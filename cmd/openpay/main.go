@@ -120,6 +120,29 @@ func serve() error {
 	auditRepo := postgres.NewAuditRepository(pool)
 	apiKeysRepo := postgres.NewAPIKeyRepository(pool)
 	inboundRepo := postgres.NewInboundEventRepository(pool)
+	activityRepo := postgres.NewTransactionActivityRepository(pool)
+	provider.SetHTTPActivityRecorder(func(ctx context.Context, trace provider.HTTPTrace) {
+		tc, ok := provider.TraceContextFrom(ctx)
+		if !ok || tc.MerchantID == "" || tc.ReferenceID == "" {
+			return
+		}
+		now := time.Now()
+		request := &domain.TransactionActivity{
+			ID: id.NewPrefixed("act"), TransactionID: tc.TransactionID, MerchantID: tc.MerchantID,
+			Environment: tc.Environment, ReferenceID: tc.ReferenceID, Direction: domain.ActivityProviderRequest,
+			Phase: domain.ActivityRequest, Provider: trace.Provider, Method: trace.Method, URL: trace.URL,
+			Headers: map[string][]string(trace.RequestHeaders), Body: trace.RequestBody, CreatedAt: now,
+		}
+		_ = activityRepo.Create(context.Background(), request)
+		response := &domain.TransactionActivity{
+			ID: id.NewPrefixed("act"), TransactionID: tc.TransactionID, MerchantID: tc.MerchantID,
+			Environment: tc.Environment, ReferenceID: tc.ReferenceID, Direction: domain.ActivityProviderResponse,
+			Phase: domain.ActivityResponse, Provider: trace.Provider, Method: trace.Method, URL: trace.URL,
+			Headers: map[string][]string(trace.ResponseHeaders), Body: trace.ResponseBody,
+			StatusCode: trace.StatusCode, DurationMs: trace.DurationMs, Error: trace.Error, CreatedAt: now,
+		}
+		_ = activityRepo.Create(context.Background(), response)
+	})
 	providerCfgRepo := postgres.NewProviderConfigRepository(pool)
 	adminStats := postgres.NewAdminStore(pool)
 
@@ -133,6 +156,7 @@ func serve() error {
 
 	// Webhook engine (outbound) doubles as the core engine's notifier.
 	dispatcher := webhook.NewDispatcher(deliveryRepo, merchantRepo, cfg.Webhook, log)
+	dispatcher.SetActivityRepository(activityRepo)
 
 	engine := core.New(core.Deps{
 		Registry:     registry,
@@ -144,6 +168,7 @@ func serve() error {
 	})
 
 	receiver := webhook.NewReceiver(registry, engine, inboundRepo, log)
+	receiver.SetActivityRepository(activityRepo)
 	receiver.SetEnvironmentResolver(providerEnvironments(providerCfgRepo, registry))
 
 	// Provider hot reload: the admin console saves credentials, this callback
@@ -167,6 +192,7 @@ func serve() error {
 		Transactions:       txRepo,
 		Deliveries:         deliveryRepo,
 		Inbound:            inboundRepo,
+		Activities:         activityRepo,
 		ProviderCfgs:       providerCfgRepo,
 		Stats:              adminStats,
 		ReloadProvider:     reloadProvider,
@@ -181,6 +207,7 @@ func serve() error {
 	}
 
 	apiServer := api.NewServer(engine, merchantRepo, apiKeysRepo, cfg.APIKeyPepper, log)
+	apiServer.SetActivityRepository(activityRepo)
 	apiServer.MountAdmin(adminServer.Handler())
 	webhookRouter := chi.NewRouter()
 	webhookRouter.Use(middleware.RequestID)

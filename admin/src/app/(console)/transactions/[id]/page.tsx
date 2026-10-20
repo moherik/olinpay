@@ -13,41 +13,24 @@ import { StatusTag } from "@/components/ui/status-tag";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CodeBlock } from "@/components/ui/code";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { IconChevronDown } from "@/components/icons";
 import {
   TabsContent,
   TabsList,
   TabsRoot,
   TabsTrigger,
 } from "@/components/ui/tabs";
-import type { Transaction } from "@/lib/demo-data";
 import {
   apiGet,
   apiMutate,
   ApiError,
-  mapInbound,
   mapTransaction,
   merchantName,
-  type RawInbound,
+  type RawActivity,
   type RawTransaction,
 } from "@/lib/api";
 import { formatDateTime, formatIDR } from "@/lib/format";
-
-type TimelineEvent = { at: string; label: string; detail: string };
-
-function buildEvents(
-  trx: Transaction,
-  inbound: TimelineEvent[],
-): TimelineEvent[] {
-  const events: TimelineEvent[] = [
-    {
-      at: trx.createdAt,
-      label: "Payment created",
-      detail: `${trx.provider} accepted the create request over ${trx.channel || trx.method}.`,
-    },
-  ];
-  events.push(...inbound);
-  return events;
-}
+import { activityBody, activityLabel, activityOrder, activityOutcome, activityTone } from "@/lib/transaction-activity";
 
 export default function TransactionDetailPage() {
   return (
@@ -70,15 +53,16 @@ function DetailFallback() {
 
 function TransactionDetailInner() {
   const params = useParams<{ id: string }>();
-  const { notify, merchants, auth, can, environment } = useApp();
+  const { notify, merchants, auth, can } = useApp();
 
   const [trx, setTrx] = useState<RawTransaction | null>(null);
   const [meta, setMeta] = useState<Record<string, unknown>>({});
-  const [inbound, setInbound] = useState<TimelineEvent[]>([]);
+  const [activities, setActivities] = useState<RawActivity[]>([]);
+  const [activityError, setActivityError] = useState<string | null>(null);
+  const [expandedActivity, setExpandedActivity] = useState<string | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [cancelledMessage, setCancelledMessage] = useState("");
 
   const load = useCallback(
     async (sync: boolean) => {
@@ -92,21 +76,20 @@ function TransactionDetailInner() {
         setTrx(data);
         setMeta(txMeta);
         try {
-          const { data: events } = await apiGet<RawInbound[]>("/inbound", {
-            transaction_id: params.id,
-            env: data.environment,
-          });
-          setInbound(
-            events.map((event) => mapInbound(event, environment)).map((entry) => ({
-              at: entry.receivedAt,
-              label: `Callback: ${entry.event || "unlabelled"}`,
-              detail: `${entry.provider} reported the outcome${
-                entry.applied ? "; applied to the payment" : "; not applied"
-              }${entry.signatureValid ? ", signature verified" : ", signature NOT verified"}.`,
-            })),
+          const { data: rows } = await apiGet<RawActivity[]>(
+            `/transactions/${params.id}/activities`,
+            { limit: 500 },
           );
-        } catch {
-          setInbound([]);
+          setActivities(
+            [...rows].sort((a, b) => {
+              const rank = activityOrder(b.direction, b.phase) - activityOrder(a.direction, a.phase);
+              return rank || Date.parse(b.created_at) - Date.parse(a.created_at);
+            }),
+          );
+          setActivityError(null);
+        } catch (cause) {
+          setActivities([]);
+          setActivityError(cause instanceof ApiError ? cause.message : "Cannot load transaction activity.");
         }
         setState("ready");
       } catch (cause) {
@@ -116,7 +99,7 @@ function TransactionDetailInner() {
         setState("error");
       }
     },
-    [params.id, environment],
+    [params.id],
   );
 
   useEffect(() => {
@@ -165,7 +148,6 @@ function TransactionDetailInner() {
   }
 
   const mapped = mapTransaction(trx);
-  const timeline = buildEvents(mapped, inbound);
   const syncAvailable = meta.can_sync === true;
   const cancelAvailable =
     meta.can_cancel === true &&
@@ -183,7 +165,6 @@ function TransactionDetailInner() {
         { reason: "Cancelled from the transaction detail page" },
       );
       setTrx(data);
-      setCancelledMessage("Cancellation confirmed.");
       notify(`Cancellation recorded for ${mapped.reference}.`);
       void load(false);
     } catch (cause) {
@@ -215,7 +196,6 @@ function TransactionDetailInner() {
                 setSyncing(true);
                 try {
                   await load(true);
-                  setCancelledMessage("");
                   notify(
                     `Sync finished for ${mapped.reference}: the stored status now matches the gateway.`,
                   );
@@ -228,14 +208,39 @@ function TransactionDetailInner() {
             >
               {syncing ? "Syncing…" : "Sync from provider"}
             </Button>
+            <ConfirmDialog
+              trigger={
+                <Button variant="secondary" disabled={!cancelAvailable}>
+                  Cancel payment
+                </Button>
+              }
+              title={`Cancel ${mapped.reference}?`}
+              description="Cancelling tells the gateway to void the payment. A pending payment can still be paid until the gateway confirms."
+              confirmLabel={cancelAvailable ? "Cancel payment" : undefined}
+              onConfirm={() => void cancelPayment()}
+            />
           </>
         }
       />
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-        <div className="grid gap-4">
+      <div className="grid gap-4">
+        <div className="grid gap-4 md:grid-cols-2">
           <Panel>
-            <PanelHeader title="Payment" />
+            <PanelHeader
+              title="Payment"
+              action={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(mapped.id);
+                    notify(`Copied ${mapped.id} to clipboard.`);
+                  }}
+                >
+                  Copy id
+                </Button>
+              }
+            />
             <PanelBody>
               <DefList>
                 <DefRow label="Reference">
@@ -285,42 +290,6 @@ function TransactionDetailInner() {
 
           <Panel>
             <PanelHeader
-              title="Provider callbacks"
-              hint="What the gateway reported back, and whether the signature verified."
-            />
-            <PanelBody>
-              {timeline.length <= 1 ? (
-                <EmptyState
-                  title="No callbacks recorded"
-                  body="The gateway has not called back for this payment yet, or the callback history is not stored for this environment."
-                />
-              ) : (
-                <ol className="flex flex-col">
-                  {timeline.map((event, index) => (
-                    <li
-                      key={`${event.label}-${index}`}
-                      className="grid grid-cols-[104px_1fr] gap-3 border-b border-border-subtle py-2.5 last:border-b-0"
-                    >
-                      <span className="num text-[12px] text-muted">
-                        {formatDateTime(event.at)}
-                      </span>
-                      <span>
-                        <span className="block text-[13px] text-ink">
-                          {event.label}
-                        </span>
-                        <span className="block text-[12px] text-secondary">
-                          {event.detail}
-                        </span>
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </PanelBody>
-          </Panel>
-
-          <Panel>
-            <PanelHeader
               title="Raw record"
               hint="The stored payment record, exactly as the engine holds it."
             />
@@ -355,45 +324,97 @@ function TransactionDetailInner() {
             </PanelBody>
           </Panel>
         </div>
-
-        <div className="grid gap-4">
-          <Panel>
-            <PanelHeader title="Actions" />
-            <PanelBody className="flex flex-col items-start gap-2">
-              <ConfirmDialog
-                trigger={
-                  <Button variant="secondary" disabled={!cancelAvailable}>
-                    Cancel payment
-                  </Button>
-                }
-                title={`Cancel ${mapped.reference}?`}
-                description="Cancelling tells the gateway to void the payment. A pending payment can still be paid until the gateway confirms."
-                confirmLabel={cancelAvailable ? "Cancel payment" : undefined}
-                onConfirm={() => void cancelPayment()}
-              />
-              <p className="text-[12px] text-muted">
-                {!cancelAvailable
-                  ? meta.can_cancel !== true
-                    ? "This payment cannot be cancelled by its provider, or it already reached a final state."
-                    : "Cancelling requires the operator or owner role."
-                  : "Only a pending payment can be cancelled."}
-              </p>
-              {cancelledMessage ? (
-                <p className="text-[12px] text-secondary">{cancelledMessage}</p>
-              ) : null}
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(mapped.id);
-                  notify(`Copied ${mapped.id} to clipboard.`);
-                }}
-              >
-                Copy transaction id
-              </Button>
-            </PanelBody>
-          </Panel>
-        </div>
+        <ActivityPanel
+          activities={activities}
+          error={activityError}
+          expanded={expandedActivity}
+          onExpand={setExpandedActivity}
+        />
       </div>
     </>
+  );
+}
+
+function ActivityPanel({
+  activities,
+  error,
+  expanded,
+  onExpand,
+}: {
+  activities: RawActivity[];
+  error: string | null;
+  expanded: string | null;
+  onExpand: (id: string | null) => void;
+}) {
+  return (
+    <Panel>
+      <PanelHeader
+        title="Activity"
+        hint="Every captured boundary from merchant request to provider and webhook delivery."
+      />
+      <PanelBody className="p-0">
+        {error ? (
+          <ApiFailed title="Activity could not be loaded" error={error} onRetry={() => window.location.reload()} />
+        ) : activities.length === 0 ? (
+          <EmptyState
+            title="No activity recorded yet"
+            body="This transaction has no persisted request, response, callback, or webhook activity."
+          />
+        ) : (
+          <ol className="divide-y divide-border-subtle">
+            {activities.map((item) => {
+              const isOpen = expanded === item.id;
+              const tone = activityTone(item.status_code, item.error);
+              const toneClass =
+                tone === "danger"
+                  ? "text-failed"
+                  : tone === "warn"
+                    ? "text-pending"
+                    : tone === "ok"
+                      ? "text-paid"
+                      : "text-muted";
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    aria-expanded={isOpen}
+                    onClick={() => onExpand(isOpen ? null : item.id)}
+                    className="grid w-full grid-cols-[88px_1fr_auto] items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    <span className="num text-[12px] text-muted">
+                      {formatDateTime(item.created_at)}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-[13px] font-medium text-ink">
+                        {activityLabel(item.direction, item.phase, item.method, item.url)}
+                      </span>
+                      <span className="block truncate text-[12px] text-secondary">
+                        {item.phase || "Activity recorded"}
+                      </span>
+                    </span>
+                    <span className="flex items-center justify-end gap-2">
+                      <span className={`whitespace-nowrap text-[12px] ${toneClass}`}>
+                        {activityOutcome(item.status_code, item.duration_ms, item.error)}
+                      </span>
+                      <IconChevronDown size={14} className={isOpen ? "rotate-180" : undefined} />
+                    </span>
+                  </button>
+                  {isOpen ? (
+                    <div className="grid min-w-0 max-w-full gap-3 overflow-hidden border-t border-border-subtle bg-surface-muted p-4">
+                      {item.url ? <p className="break-all font-mono text-[12px] text-secondary">{item.url}</p> : null}
+                      {item.headers && Object.keys(item.headers).length > 0 ? (
+                        <CodeBlock label="headers.json" code={JSON.stringify(item.headers, null, 2)} />
+                      ) : null}
+                      {item.body ? <CodeBlock label="body.json" code={activityBody(item.body)} /> : null}
+                      {item.error ? <p className="text-[13px] text-failed">{item.error}</p> : null}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </PanelBody>
+    </Panel>
   );
 }

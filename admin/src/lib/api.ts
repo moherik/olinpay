@@ -175,6 +175,26 @@ export type RawInbound = {
   received_at: string;
 };
 
+export type RawActivity = {
+  id: string;
+  transaction_id?: string;
+  merchant_id: string;
+  environment?: string;
+  reference_id?: string;
+  direction: string;
+  phase: string;
+  provider?: string;
+  event_type?: string;
+  method?: string;
+  url?: string;
+  status_code?: number;
+  duration_ms?: number;
+  headers?: Record<string, string[]>;
+  body?: string;
+  error?: string;
+  created_at: string;
+};
+
 export type RawApiKey = {
   id: string;
   merchant_id: string;

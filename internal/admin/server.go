@@ -25,6 +25,7 @@ type Deps struct {
 	Transactions repository.TransactionRepository
 	Deliveries   repository.WebhookDeliveryRepository
 	Inbound      repository.InboundEventRepository
+	Activities   repository.TransactionActivityRepository
 	ProviderCfgs repository.ProviderConfigRepository
 	Stats        repository.AdminStore
 	// ReloadProvider rebuilds (or retires) a provider instance after its
@@ -53,6 +54,7 @@ type Server struct {
 	transactions repository.TransactionRepository
 	deliveries   repository.WebhookDeliveryRepository
 	inbound      repository.InboundEventRepository
+	activities   repository.TransactionActivityRepository
 	providerCfgs repository.ProviderConfigRepository
 	stats        repository.AdminStore
 	reload       func(name, environment string) error
@@ -85,6 +87,7 @@ func New(d Deps) *Server {
 		transactions: d.Transactions,
 		deliveries:   d.Deliveries,
 		inbound:      d.Inbound,
+		activities:   d.Activities,
 		providerCfgs: d.ProviderCfgs,
 		stats:        d.Stats,
 		reload:       d.ReloadProvider,
@@ -118,6 +121,7 @@ func (s *Server) Handler() http.Handler {
 		// Monitor.
 		r.Get("/api/transactions", s.listTransactions)
 		r.Get("/api/transactions/{id}", s.getTransaction)
+		r.Get("/api/transactions/{id}/activities", s.listTransactionActivities)
 		r.With(requireRole(domain.RoleOperator)).Post("/api/transactions/{id}/cancel", s.cancelTransaction)
 
 		r.Get("/api/deliveries", s.listDeliveries)
