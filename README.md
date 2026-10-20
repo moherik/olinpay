@@ -87,7 +87,7 @@ PJP → webhook engine (receiver) → provider engine (parse + verify)
 
 ```
 .
-├── cmd/openpay/            # entrypoint: serve | migrate | seed | create-admin
+├── cmd/openpay/            # entrypoint: serve | migrate | seed
 ├── internal/
 │   ├── admin/              # admin API: auth/sessions, RBAC, console endpoints
 │   ├── api/                # API interface (chi handlers, auth, error mapping)
@@ -180,9 +180,8 @@ same-origin and HttpOnly.
 ```bash
 # console on :3000 — backend must be running
 cd admin && npm install && npm run dev
-# first install: the console walks through owner account, first gateway and
-# first merchant — or create a bootstrap account from the CLI:
-openpay create-admin --email owner@example.com --role owner
+# first install: visit http://localhost:3000/setup to create the owner account,
+# then configure the first gateway and merchant.
 ```
 
 On the very first open, `/setup` hosts the **first-install wizard**: while no
@@ -194,8 +193,8 @@ shortcuts over the normal authenticated API: first gateway credentials
 (`PUT /providers/{name}/config`, adapter-validated), and the first merchant
 plus its sandbox API key (both one-time secrets shown once). Every wizard
 step after the account is skippable. Once any account exists the setup
-endpoint answers `409 setup_completed` — `openpay create-admin` remains the
-equivalent CLI path and starts refusing too.
+endpoint answers `409 setup_completed`. Later console accounts are created by
+an authenticated owner through `POST /admin/api/users`.
 
 It covers transaction search and cancel, merchant lifecycle and routing,
 API keys, provider credentials (stored in PostgreSQL, hot-reloaded into the
@@ -779,8 +778,7 @@ See [`.env.example`](.env.example) for the full list. The essentials:
 | `OPENPAY_API_KEY_PEPPER` | – | Secret mixed into API-key hashing |
 | `OPENPAY_WEBHOOK_MAX_ATTEMPTS` | `6` | Outbound delivery attempts |
 
-CLI: `openpay serve`, `openpay migrate`, `openpay seed`, `openpay create-admin`,
-`openpay version`.
+CLI: `openpay serve`, `openpay migrate`, `openpay seed`, `openpay version`.
 
 Provider credentials set through the console take priority over the
 `OPENPAY_PROVIDER_*` environment variables: a DB row for the same
@@ -868,8 +866,7 @@ Also implemented: the **admin API** (`/admin/api` on the API server: server-side
 sessions, RBAC, DB-backed provider credentials with hot reload, audit log) and
 the **admin console** (Next.js, `admin/`) wired to it — including a routing
 editor, a first-install setup wizard for brand-new installs
-(`POST /api/setup`, self-disabling after the first owner account; the
-`create-admin` CLI keeps working as the alternative bootstrap),
+(`POST /api/setup`, self-disabling after the first owner account),
 one-time secret reveals for merchant webhook secrets / API keys /
 invited-user passwords, and flag-gated features.
 
@@ -886,9 +883,9 @@ Deliberately left for later:
 - metrics/tracing, rate limiting, and a message-queue backend for the
   dispatcher;
 - amount-based / weighted / least-cost routing strategies;
-- forgot-password / email flows for console accounts (the only account
-  creation paths are the first-install wizard and `create-admin`; nothing
-  emails in this build).
+- forgot-password / email flows for console accounts (the first owner uses the
+  install wizard; later accounts are created through the authenticated Users
+  API; nothing emails in this build).
 
 ## License
 

@@ -26,18 +26,12 @@ HttpOnly — no CORS and no token in JavaScript.
 Sessions are server-side. On a brand-new install the console reports
 "no account yet" on `/login` and links to the **first-install wizard** at
 `/setup`: it creates the owner account (while no console account exists,
-`POST /admin/api/setup` is open — after that it answers `409 setup_completed`)
+`POST /admin/api/setup` is open; after that it answers `409 setup_completed`)
 and, signed in immediately, offers skippable one-time steps for the first
 gateway credentials and the first merchant + API key.
 
-The CLI does the same account step and works alongside it:
-
-```bash
-openpay create-admin --email owner@example.com --name Owner --role owner
-```
-
-The one-time password is printed once. Sign in at `/login`; a session lasts
-12 hours.
+Later console accounts are created by an authenticated owner through the Users
+API. Sign in at `/login`; a session lasts 12 hours.
 
 ## What it covers
 

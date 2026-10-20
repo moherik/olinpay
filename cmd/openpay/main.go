@@ -10,8 +10,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,8 +23,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"golang.org/x/crypto/bcrypt"
-
 	"github.com/moherik/openpay.id/internal/admin"
 	"github.com/moherik/openpay.id/internal/api"
 	"github.com/moherik/openpay.id/internal/config"
@@ -73,8 +69,6 @@ func run(args []string) error {
 		return runMigrations()
 	case "seed":
 		return seed(args)
-	case "create-admin":
-		return createAdmin(args)
 	case "version", "-version", "--version":
 		fmt.Println(version)
 		return nil
@@ -91,11 +85,10 @@ func usage() {
 	fmt.Fprint(os.Stderr, `openpay.id - open source payment orchestration for Indonesia
 
 Usage:
-  openpay serve        Run the API, admin console and webhook engine servers
-  openpay migrate      Apply SQL migrations to the configured database
-  openpay seed         Create a merchant and print its API key
-  openpay create-admin Create an admin console user (email, name, role)
-  openpay version      Print the version
+	openpay serve        Run the API, admin console and webhook engine servers
+	openpay migrate      Apply SQL migrations to the configured database
+	openpay seed         Create a merchant and print its API key
+	openpay version      Print the version
 
 Configuration is read from the environment (see .env.example).
 `)
@@ -184,7 +177,7 @@ func serve() error {
 	})
 
 	if n, err := adminUserRepo.Count(ctx); err == nil && n == 0 {
-		log.Warn("no console users exist; create the bootstrap admin with `openpay create-admin`")
+		log.Warn("no console users exist; complete first-owner setup at /setup")
 	}
 
 	apiServer := api.NewServer(engine, merchantRepo, apiKeysRepo, cfg.APIKeyPepper, log)
@@ -470,80 +463,6 @@ func seed(args []string) error {
 	fmt.Printf("\n  Merchant ID      : %s\n  API key          : %s\n  Webhook secret   : %s\n\n",
 		merchant.ID, resolvedKey, resolvedSecret)
 	fmt.Println("  Store the API key and webhook secret now; they are not shown again.")
-	return nil
-}
-
-// --- create-admin -----------------------------------------------------------
-
-// createAdmin creates the console bootstrap user. No email infrastructure
-// exists in this build: a one-time password is generated (or supplied via a
-// flag) and printed once.
-func createAdmin(args []string) error {
-	fs := flag.NewFlagSet("create-admin", flag.ContinueOnError)
-	email := fs.String("email", "", "login email (required)")
-	name := fs.String("name", "", "display name")
-	role := fs.String("role", "owner", "owner, operator or tech")
-	password := fs.String("password", "", "initial password (generated when empty)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	email2 := strings.TrimSpace(*email)
-	if email2 == "" || !strings.Contains(email2, "@") {
-		return fmt.Errorf("a valid --email is required")
-	}
-	roleValue := domain.AdminRole(strings.TrimSpace(*role))
-	if !roleValue.Valid() {
-		return fmt.Errorf("--role must be owner, operator or tech")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	log := logger.New(cfg.LogLevel, os.Stdout)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
-
-	resolved := strings.TrimSpace(*password)
-	if resolved == "" {
-		buf := make([]byte, 16)
-		if _, err := rand.Read(buf); err != nil {
-			return fmt.Errorf("generating password: %w", err)
-		}
-		resolved = base64.RawURLEncoding.EncodeToString(buf)
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(resolved), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hashing password: %w", err)
-	}
-
-	now := time.Now()
-	user := &domain.AdminUser{
-		ID:           id.NewPrefixed("usr"),
-		Email:        email2,
-		Name:         strings.TrimSpace(*name),
-		PasswordHash: string(hash),
-		Role:         roleValue,
-		Status:       domain.AdminUserActive,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}
-	if err := postgres.NewAdminUserRepository(pool).Create(ctx, user); err != nil {
-		return fmt.Errorf("creating admin user: %w", err)
-	}
-
-	log.Info("admin user created", "email", user.Email, "role", user.Role)
-	fmt.Printf("\n  Email            : %s\n  Role             : %s\n  Password         : %s\n\n",
-		user.Email, user.Role, resolved)
-	fmt.Println("  Store the password now; it is not shown again. Sign in at /login on the dashboard.")
 	return nil
 }
 

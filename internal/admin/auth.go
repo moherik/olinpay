@@ -210,12 +210,12 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 }
 
 type consoleStatusResponse struct {
-	// NeedsSetup is true while no console user exists; the CLI creates it.
+	// NeedsSetup is true while no console user exists.
 	NeedsSetup bool `json:"needs_setup"`
 }
 
 // consoleStatus tells the login page whether the console still needs its
-// bootstrap user (openpay create-admin), without leaking account data.
+// bootstrap user, without leaking account data.
 func (s *Server) consoleStatus(w http.ResponseWriter, r *http.Request) {
 	n, err := s.users.Count(r.Context())
 	if err != nil {

@@ -335,8 +335,7 @@ function AccountForm({ onDone }: { onDone: (email: string) => void }) {
   return (
     <form className="flex flex-col gap-4" onSubmit={submit}>
       <p className="text-[13px] text-secondary">
-        This is the first console account, role owner. It replaces running{" "}
-        <code className="font-mono">openpay create-admin</code> by hand.
+        This creates the first console account with the owner role.
       </p>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Name" htmlFor="setup-name" required>

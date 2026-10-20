@@ -16,6 +16,8 @@ import (
 const adminUserColumns = `id, email, name, password_hash, role, status, last_login_at,
 	created_at, updated_at`
 
+const firstAdminUserAdvisoryLockKey int64 = 748921406133658219
+
 func scanAdminUser(s scannable) (*domain.AdminUser, error) {
 	var u domain.AdminUser
 	err := s.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Role, &u.Status,
@@ -51,6 +53,43 @@ func (r *AdminUserRepository) Create(ctx context.Context, u *domain.AdminUser) e
 			return fmt.Errorf("postgres: admin user email: %w", domain.ErrConflict)
 		}
 		return fmt.Errorf("postgres: inserting admin user: %w", err)
+	}
+	return nil
+}
+
+// CreateFirst implements repository.AdminUserRepository.
+func (r *AdminUserRepository) CreateFirst(ctx context.Context, u *domain.AdminUser) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: beginning first admin user transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, firstAdminUserAdvisoryLockKey); err != nil {
+		return fmt.Errorf("postgres: locking first admin user creation: %w", err)
+	}
+
+	var n int64
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM admin_users`).Scan(&n); err != nil {
+		return fmt.Errorf("postgres: counting admin users in first admin user transaction: %w", err)
+	}
+	if n != 0 {
+		return fmt.Errorf("postgres: first admin user already exists: %w", domain.ErrConflict)
+	}
+
+	const q = `
+		INSERT INTO admin_users (id, email, name, password_hash, role, status, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`
+	_, err = tx.Exec(ctx, q,
+		u.ID, u.Email, u.Name, u.PasswordHash, u.Role, u.Status, u.CreatedAt, u.UpdatedAt)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("postgres: first admin user email: %w", domain.ErrConflict)
+		}
+		return fmt.Errorf("postgres: inserting first admin user: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: committing first admin user: %w", err)
 	}
 	return nil
 }

@@ -488,6 +488,17 @@ func (r *adminUserRepo) Create(_ context.Context, u *domain.AdminUser) error {
 	return nil
 }
 
+func (r *adminUserRepo) CreateFirst(_ context.Context, u *domain.AdminUser) error {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	if len(r.store.adminUsers) != 0 {
+		return domain.ErrConflict
+	}
+	clone := *u
+	r.store.adminUsers[u.ID] = &clone
+	return nil
+}
+
 func (r *adminUserRepo) Update(_ context.Context, u *domain.AdminUser) error {
 	r.store.mu.Lock()
 	defer r.store.mu.Unlock()

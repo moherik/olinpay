@@ -1,16 +1,14 @@
 package admin
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/moherik/openpay.id/internal/domain"
 )
 
-// bootstrapPasswordMin is the smallest acceptable first-console password. The
-// CLI (`openpay create-admin`) stays the expert path; the browser wizard is
-// the one place a human types the very first credential, so it enforces a
-// floor the CLI deliberately leaves open.
+// bootstrapPasswordMin is the smallest acceptable first-console password.
 const bootstrapPasswordMin = 10
 
 // setupRequest is the first-install wizard's payload: the console's first
@@ -22,16 +20,10 @@ type setupRequest struct {
 	Password string `json:"password"`
 }
 
-// setup serves POST /api/setup — the browser equivalent of
-// `openpay create-admin`. It works only while no console account exists at
-// all: the first account marks the installation as configured and every later
-// call answers 409 (the WordPress-style one-shot install). The created account
-// is an active owner who is signed in immediately, so the wizard continues
-// over the normal authenticated API.
-//
-// The count-then-create check leaves a small window on a multi-instance
-// deployment where two different emails could both win; a new installation has
-// no traffic to speak of, and `openpay create-admin` carries the same contract.
+// setup serves POST /api/setup. It works only while no console account exists:
+// the first account marks the installation as configured and every later call
+// answers 409. The created account is an active owner who is signed in
+// immediately, so the wizard continues over the normal authenticated API.
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	var body setupRequest
 	if err := decodeJSON(r, &body); err != nil {
@@ -58,16 +50,6 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n, err := s.users.Count(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "cannot inspect console accounts")
-		return
-	}
-	if n > 0 {
-		writeError(w, http.StatusConflict, "setup_completed", "this console already has an account — sign in instead")
-		return
-	}
-
 	hash, err := hashPassword(password)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "cannot hash password")
@@ -84,8 +66,13 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if err := s.users.Create(r.Context(), user); err != nil {
-		s.writeEngineError(w, err, "cannot create account")
+	if err := s.users.CreateFirst(r.Context(), user); err != nil {
+		if errors.Is(err, domain.ErrConflict) {
+			writeError(w, http.StatusConflict, "setup_completed", "this console already has an account; sign in instead")
+			return
+		}
+		s.log.Error("creating first console account", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "cannot create account")
 		return
 	}
 
