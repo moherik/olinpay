@@ -29,7 +29,7 @@ func (r *TransactionActivityRepository) Create(ctx context.Context, a *domain.Tr
 		INSERT INTO transaction_activities (
 			id, transaction_id, merchant_id, environment, reference_id, direction, phase,
 			provider, event_type, method, url, status_code, duration_ms, attempt, signature_valid, applied, headers, body, error, created_at
-		) VALUES ($1,NULLIF($2,''),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`
+		) VALUES ($1,NULLIF($2,''),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`
 	_, err = r.pool.Exec(ctx, q,
 		a.ID, a.TransactionID, a.MerchantID, a.Environment, a.ReferenceID, a.Direction, a.Phase,
 		a.Provider, a.EventType, a.Method, a.URL, a.StatusCode, a.DurationMs, a.Attempt, a.SignatureValid, a.Applied, headers, a.Body, a.Error, a.CreatedAt,

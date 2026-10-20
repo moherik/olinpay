@@ -6,6 +6,10 @@ export function activityOrder(direction: string, phase: string): number {
     "provider_request:request": 1,
     "provider_response:response": 2,
     "merchant_response:response": 3,
+    "provider_webhook:request": 4,
+    "provider_webhook:response": 5,
+    "merchant_webhook:request": 6,
+    "merchant_webhook:response": 7,
   };
   return ranks[`${direction}:${phase}`] ?? 4;
 }
@@ -17,7 +21,7 @@ export function activityLabel(direction: string, phase: string, method?: string,
     "merchant_response:response": "AwsemPay Response",
     "provider_request:request": "Provider Request",
     "provider_response:response": "Provider Response",
-    "provider_webhook:request": "Provider Webhook",
+    "provider_webhook:request": "Incoming request",
     "provider_webhook:response": "AwsemPay Acknowledgement",
     "merchant_webhook:request": "Merchant Webhook",
     "merchant_webhook:response": "Merchant Webhook Response",
